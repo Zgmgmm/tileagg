@@ -35,6 +35,7 @@ void play();
 void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultString);
 void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* resultString);
 void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resultString);
+void continueAfterPAUSE(RTSPClient* rtspClient, int resultCode, char* resultString);
 
 // Other event handler functions:
 void subsessionAfterPlaying(void* clientData); // called when a stream's subsession (e.g., audio or video substream) ends
@@ -223,7 +224,6 @@ void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultS
 
     // Create a media session object from this SDP description:
     scs.session = MediaSession::createNew(env, sdpDescription);
-    rtspClient->setSpeed(*scs.session, 0.1);
 
     delete[] sdpDescription; // because we don't need it anymore
     if (scs.session == NULL) {
@@ -280,7 +280,12 @@ void setupNextSubsession(RTSPClient* rtspClient) {
     rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, scs.session->absStartTime(), scs.session->absEndTime());
   } else {
     scs.duration = scs.session->playEndTime() - scs.session->playStartTime();
-    rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY);
+    double start;
+    if (ta->fLastPlayTime == PLAY_TIME_UNAVAILABLE)
+      start = 0.0;
+    else
+      start = ta->fLastPlayTime / 90000;
+    rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, start, -1);
   }
 }
 
@@ -357,9 +362,85 @@ void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resultStrin
   if (!success) {
     // An unrecoverable error occurred with this stream.
     shutdownStream(rtspClient);
-  }
+  } else {
+    static Boolean d = True;
+    if (!d) return;
+    d = False;
+    UsageEnvironment& env = rtspClient->envir();  // alias
+                                                  // pause after seconds
+    void abr(void* clientData);
+    env.taskScheduler().scheduleDelayedTask( 2.4* 1e6, (TaskFunc*)abr, NULL);
+    // StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs;
+    // void pauseFunc(void* clientData);
+    // env.taskScheduler().scheduleDelayedTask(2.5 * 1e6, (TaskFunc*)pauseFunc,
+    //                                         rtspClient);
+  };
 }
 
+void abr(void* clientData) {
+return;  UsageEnvironment& env = ta->envir();  // alias
+  auto progName = "switch";
+  auto urls = {
+    //     "rtsp://localhost:8888/3_3/10000000/0x0_aud.mkv",
+
+    // "rtsp://localhost:8888/3_3/10000000/576x0_aud.mkv",
+               "rtsp://localhost:8888/3_3/10000000/0x320_aud.mkv",
+              //  "rtsp://localhost:8888/3_3/10000000/576x320_aud.mkv",
+              //  "rtsp://localhost:8888/3_3/10000000/1216x320_aud.mkv",
+              //  "rtsp://localhost:8888/3_3/10000000/576x640_aud.mkv",
+                // "rtsp://localhost:8888/3_3/10000000/full.mkv",
+              //  "rtsp://localhost:8888/3_3/1300000/full.mkv",
+              //  "rtsp://localhost:8888/3_3/625000/full.mkv",
+
+               };
+  for (auto& url : urls) {
+    openURL(env, progName, url);
+  }
+
+
+
+  void rollback(void* clientData);
+  env.taskScheduler().scheduleDelayedTask( 1.2* 1e6, (TaskFunc*)rollback, NULL);
+
+}
+void rollback(void *clientData){
+  return;
+    UsageEnvironment& env = ta->envir();  // alias
+  if(ta->fNumTiles==1)ta->fNumTiles=2;
+  else ta->fNumTiles=1;
+  // ta->fNumTiles=1+(ta->fNumTiles+1)%2;
+    env << "[ABR]"
+      << " switching "
+      << ta->fNumTiles<<"\n";
+  // if(ta->fNumTiles==1)return;
+  env.taskScheduler().scheduleDelayedTask( 1.6* 1e6, (TaskFunc*)rollback, NULL);
+
+}
+
+void continueAfterPAUSE(RTSPClient* rtspClient, int resultCode,
+                        char* resultString) {
+  do {
+    rtspClient->envir() << "resume!!!" << resultString << "\n";
+  } while (0);
+  void resumeFunc(void* clientData);
+
+  UsageEnvironment& env = rtspClient->envir();  // alias
+  env.taskScheduler().scheduleDelayedTask(0.5 * 1e6, (TaskFunc*)resumeFunc,
+                                          rtspClient);
+  delete[] resultString;
+}
+
+void resumeFunc(void* clientData) {
+  RTSPClient* rtspClient = (RTSPClient*)clientData;
+  StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs;
+  rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY,-1,-1);
+}
+
+void pauseFunc(void* clientData) {
+  RTSPClient* rtspClient = (RTSPClient*)clientData;
+  StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs;
+  rtspClient->sendPauseCommand(*scs.session, continueAfterPAUSE);
+}
 
 // Implementation of the other event handlers:
 
@@ -380,7 +461,7 @@ void subsessionAfterPlaying(void* clientData) {
   }
 
   // All subsessions' streams have now been closed, so shutdown the client:
-  // shutdownStream(rtspClient);
+  shutdownStream(rtspClient);
 }
 
 void subsessionByeHandler(void* clientData, char const* reason) {

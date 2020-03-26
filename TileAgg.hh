@@ -7,6 +7,8 @@
 #include "BasicUsageEnvironment.hh"
 #include "liveMedia.hh"
 
+#define PLAY_TIME_UNAVAILABLE -1u
+
 class TileAgg;
 class TileState;
 
@@ -46,9 +48,6 @@ class TileState {
   u_int32_t fNumAvailableFrames;
 
   u_int32_t fLastRtpTimestamp;
-  u_int64_t fLastPlayTimestamp;
-
-  
 };
 
 class TileAgg : public FramedSource {

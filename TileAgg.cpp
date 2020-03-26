@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <fstream>
@@ -16,9 +17,12 @@
 #include <thread>
 #include <vector>
 
+// live555
 #include "Base64.hh"
+#include "BitVector.hh"
 #include "groupsock/GroupsockHelper.hh"
 #include "strDup.hh"
+
 // SDL
 #include <SDL.h>
 #include <SDL_thread.h>
@@ -34,16 +38,26 @@ extern "C" {
 #include "libswscale/swscale.h"
 }
 
-#define INBUF_SIZE 4096
-#define AUDIO_INBUF_SIZE 20480
-#define AUDIO_REFILL_THRESH 4096
-
-#define PLAY_TIME_UNAVAILABLE -1
-
 using namespace std;
-using namespace chrono;
+using namespace std::chrono;
 
 void play();
+
+static char START_CODE[] = {0, 0, 0, 1};
+
+Boolean timeEQ(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+  return ((unsigned)std::abs(int(a - b)) < tollerance);
+}
+
+Boolean timeLT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+  if (timeEQ(a, b, tollerance)) return False;
+  return a < b;
+}
+
+Boolean timeGT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+  if (timeEQ(a, b, tollerance)) return False;
+  return a > b;
+}
 
 template <typename T>
 class BlockingQueue {
@@ -80,12 +94,11 @@ class BlockingQueue {
  private:
   u_int32_t fMaxSize;
   std::deque<T> fQue;
-  std::mutex fMtx;                                      // 全局互斥锁.
-  std::condition_variable fCondNotFull, fCondNotEmpty;  // 全局条件
+  std::mutex fMtx;
+  std::condition_variable fCondNotFull, fCondNotEmpty;
 };
 
 BlockingQueue<Frame*> que;
-static char startCode[] = {0, 0, 0, 1};
 
 Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
              Boolean rtpMarker, u_int32_t rtpSeqNum)
@@ -99,42 +112,31 @@ Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
 
 Frame::~Frame() { delete[] fData; }
 
-Boolean rtpTimestampEQ(u_int64_t a, u_int64_t b, int tollerance = 10) {
-  return (std::abs(int(a - b)) < tollerance);
-}
-
 // npt*frequency
 int64_t TileState::curPlayTime() {
   // no available frames
   if (fNumAvailableFrames == 0) return PLAY_TIME_UNAVAILABLE;
 
-  return fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
+  int64_t timestampOffset =
+      fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
+  int64_t npt = ourSubsession->playStartTime() *
+                    ourSubsession->rtpSource()->timestampFrequency() +
+                timestampOffset;
+
+  return npt;
+  // return fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
 }
 
 TileState::TileState(TileAgg* agg, MediaSubsession* subsession)
-    : ourAgg(agg), ourSubsession(subsession), fNumAvailableFrames(0) {}
+    : ourAgg(agg), ourSubsession(subsession), fNumAvailableFrames(0) {
+  fLastRtpTimestamp = PLAY_TIME_UNAVAILABLE;
+}
 
 void TileState::queueFrame(u_int8_t* data, unsigned size,
                            u_int64_t rtpTimestamp, u_int32_t rtpSeq,
                            Boolean rtpMarker) {
-  // FIXME: hack, set first_slice_segment_in_pic_flag to 0
-  // 1. get slice_segment_address
-  // 2. set first_slice_segment_in_pic_flag(9 bits in pap.265)
-  // int addr = (data[2] & 0x7F);
-  // addr |= (data[3] & 0xC0) >> 6;
-  // Boolean isFirst = (this == ourAgg->fTiles[0]);
-  // auto naluType = (data[0] & 0x7E) >> 1;
-  // if (!isFirst)
-  //   if (naluType < 32) data[2] = data[2] & 0x7F;
-
   auto naluType = (data[0] & 0x7E) >> 1;
   if (naluType >= 32) {
-    // ourAgg->envir() << "[TileState]"
-    //                 << "queueFrame drop frame"
-    //                 << " naluType=" << naluType
-    //                 << " rtpTimestamp=" << int(rtpTimestamp)
-    //                 << " rtpSeq=" << int(rtpSeq) << " rtpMarker=" << rtpMarker
-    //                 << "\n";
     return;
   }
 
@@ -142,62 +144,54 @@ void TileState::queueFrame(u_int8_t* data, unsigned size,
   {
     static std::map<void*, std::ofstream*> m;
     std::ofstream* os = m[this];
+
     if (os == NULL) {
       m[this] = os = new std::ofstream();
       char outPath[128];
       auto desc = ourSubsession->parentSession().sessionDescription();
-      sprintf(outPath, "que_%s", desc);
+      auto fn = strrchr(desc, '/') + 1;
+      sprintf(outPath, "que_%s.265", fn);
       os->open(outPath);
 
       // write VPS/SPS/PPS once
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fVPS, ourAgg->fVPSSize);
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fSPS, ourAgg->fSPSSize);
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fPPS, ourAgg->fPPSSize);
     }
     // write file
-    os->write(startCode, 4);
+    os->write(START_CODE, 4);
     os->write((char*)data, size);
     os->flush();
   }
 
-  // hack，同个Access Unit的rtp包可能有不同timestamp，由发送端rouding导致
-  if (!fFrames.empty() && rtpTimestamp != fFrames.back()->fRtpTimestamp &&
-      rtpTimestampEQ(rtpTimestamp, fFrames.back()->fRtpTimestamp)) {
-    ourAgg->envir() << "[TileState]"
-                    << " recorrect timestamp " << (int)rtpTimestamp << "->"
-                    << (int)fFrames.back()->fRtpTimestamp << "\n";
-    rtpTimestamp = fFrames.back()->fRtpTimestamp;
-  }
-
+  // 检查rtpTimestamp是否增加，更新可用帧数
   if (ourSubsession->rtpInfo.timestamp != 0) {
-    // udpate number of available frames
-    if (rtpMarker) {  // mark the end of last Access Unit
-      fNumAvailableFrames = fFrames.size() + 1;
-    } else {  // start of next Access Unit
-      if (!fFrames.empty() &&
-          !rtpTimestampEQ(rtpTimestamp, fFrames.back()->fRtpTimestamp))
-        fNumAvailableFrames = fFrames.size();
-    }
+    if (fLastRtpTimestamp != PLAY_TIME_UNAVAILABLE &&
+        !timeEQ(rtpTimestamp, fLastRtpTimestamp))
+      fNumAvailableFrames = fFrames.size();
   }
 
+  // 帧入队
   auto frame = new Frame(data, size, rtpTimestamp, rtpMarker, rtpSeq);
   fFrames.push_back(frame);
 
-  if (fLastRtpTimestamp > rtpTimestamp &&
-      !rtpTimestampEQ(fLastRtpTimestamp, rtpTimestamp)) {
+  // 检查rtpTimestamp倒退
+  if (timeLT(rtpTimestamp, fLastRtpTimestamp)) {
     ourAgg->envir() << "[TileState]"
-                    << " error order " << (int)fLastRtpTimestamp << ">"
-                    << (int)rtpTimestamp;
+                    << " rtpTimestamp decrease! " << (int)rtpTimestamp << "<"
+                    << (int)fLastRtpTimestamp;
   }
 
+  // 记录上一个rtpTimestamp
   fLastRtpTimestamp = rtpTimestamp;
 }
 
 Frame* TileState::dequeueFrame() {
   if (fNumAvailableFrames == 0) return NULL;
+
   fNumAvailableFrames--;
   auto frame = fFrames.front();
   fFrames.pop_front();
@@ -221,19 +215,20 @@ Frame* TileState::dequeueFrame() {
       m[this] = os = new std::ofstream();
       char outPath[128];
       auto desc = ourSubsession->parentSession().sessionDescription();
-      sprintf(outPath, "deq_%s", desc);
+      auto fn = strrchr(desc, '/') + 1;
+      sprintf(outPath, "deq_%s.265", fn);
       os->open(outPath);
 
       // write VPS/SPS/PPS once
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fVPS, ourAgg->fVPSSize);
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fSPS, ourAgg->fSPSSize);
-      os->write(startCode, 4);
+      os->write(START_CODE, 4);
       os->write((char*)ourAgg->fPPS, ourAgg->fPPSSize);
     }
     // write file
-    os->write(startCode, 4);
+    os->write(START_CODE, 4);
     os->write((char*)data, size);
     os->flush();
   }
@@ -243,12 +238,11 @@ Frame* TileState::dequeueFrame() {
 
 TileAgg* TileAgg::createNew(UsageEnvironment& env) { return new TileAgg(env); }
 
-TileAgg::TileAgg(UsageEnvironment& env)
-    : FramedSource(env), fLastPlayTime(PLAY_TIME_UNAVAILABLE) {}
-
-TileAgg::~TileAgg() {
-  // TODO:
+TileAgg::TileAgg(UsageEnvironment& env) : FramedSource(env) {
+  fLastPlayTime = PLAY_TIME_UNAVAILABLE;
 }
+
+TileAgg::~TileAgg() {}
 
 void TileAgg::addTileSubsession(MediaSubsession* subsession) {
   do {                        // parse VPS SPS PPS
@@ -271,6 +265,7 @@ void TileAgg::addTileSubsession(MediaSubsession* subsession) {
     }
   } while (0);
 
+  // increase socket receieve buffer
   TileState* ts;
   ts = new TileState(this, subsession);
   fTiles[fNumTiles++] = ts;
@@ -286,21 +281,18 @@ Boolean TileAgg::startPlaying() {
   return continuePlaying();
 }
 Boolean TileAgg::continuePlaying() {
-  // envir() << "[DEBUG]"
-  //         << "[TileAgg]"
-  //         << " continue playing"
-  //         << " num_tiles=" << fNumTiles << "\n";
   for (int i = 0; i < fNumTiles; i++) {
     TileState* ts = fTiles[i];
     if (ts->ourSubsession->rtpSource()->isCurrentlyAwaitingData()) continue;
+    ts->ourSubsession->rtpSource()->getNextFrame(ts->fBuffer, MAX_TILE_BUF_SIZE,
+                                                 afterTileGettingFrame, ts,
+                                                 onTileSourceClosure, ts);
+    // DEBUG:
     // envir() << "[TileAgg]"
     //         << " " <<
     //         ts->ourSubsession->parentSession().sessionDescription()
     //         << " continue playing"
     //         << "\n";
-    ts->ourSubsession->rtpSource()->getNextFrame(ts->fBuffer, MAX_TILE_BUF_SIZE,
-                                                 afterTileGettingFrame, ts,
-                                                 onTileSourceClosure, ts);
   }
   return True;
 }
@@ -309,10 +301,18 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
                                      unsigned numTruncatedBytes,
                                      struct timeval presentationTime,
                                      unsigned durationInMicroseconds) {
-  TileState* ts = (TileState*)clientData;
+  auto ts = (TileState*)clientData;
   auto ta = ts->ourAgg;
   auto buffer = ts->fBuffer;
   auto naluType = (buffer[0] & 0x7E) >> 1;
+  u_int32_t rtpInfoSeqNum = ts->ourSubsession->rtpInfo.seqNum;
+  u_int32_t rtpInfoTS = ts->ourSubsession->rtpInfo.timestamp;
+  u_int32_t curPacketRTPSeqNum =
+      ts->ourSubsession->rtpSource()->curPacketRTPSeqNum();
+  u_int32_t curPacketRTPTimestamp =
+      ts->ourSubsession->rtpSource()->curPacketRTPTimestamp();
+  Boolean curPacketMarkerBit =
+      ts->ourSubsession->rtpSource()->curPacketMarkerBit();
 
   // DEBUG: buffer overflow
   if (numTruncatedBytes > 0) {
@@ -332,59 +332,49 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
   // unsigned totReceivedNow = stats->totNumPacketsReceived();
   // unsigned totExpectedNow = stats->totNumPacketsExpected();
   // ta->envir() << "[TileAgg]"
-  //             << " " << ts->ourSubsession->parentSession().sessionDescription()
-  //             << " packets=" << totReceivedNow << "/" << totExpectedNow << "\n";
+  //             << " " <<
+  //             ts->ourSubsession->parentSession().sessionDescription()
+  //             << " packets=" << totReceivedNow << "/" << totExpectedNow <<
+  //             "\n";
 
   // DEBUG: randomly dropping, for lossness tolerance test
-  // static bool once = true;
-  // if (once) {
-  //   std::srand(std::time(
-  //       nullptr));  // this code path runs only once in the program's
-  //       lifetime
-  //   once = false;
-  // }
-  // if (std::rand() % 100 < 10) {
-  //   ta->envir() << "[TileAgg]"
-  //                      << " dropping frame"
-  //                      <<
-  //                      ts->ourSubsession->parentSession().sessionDescription()
-  //                      << " size=" << frameSize << "\n";
-  //   goto continue_playing;
-  // }
- 
+  static bool once = true;
+  if (once) {
+    std::srand(std::time(
+        nullptr));  // this code path runs only once in the program's lifetime
+    once = false;
+  }
+  if (std::rand() % 1000 < 200) {
+    ta->envir() << "[TileAgg]"
+                << " dropping frame"
+                << " "
+                << ts->ourSubsession->parentSession().sessionDescription()
+                << " naluTyp=" << naluType << " size=" << frameSize << "\n";
+    ta->continuePlaying();
+    return;
+  }
 
-  u_int32_t rtpInfoSeqNum = ts->ourSubsession->rtpInfo.seqNum;
-  u_int32_t rtpInfoTS = ts->ourSubsession->rtpInfo.timestamp;
-  u_int32_t curPacketRTPSeqNum =
-      ts->ourSubsession->rtpSource()->curPacketRTPSeqNum();
-  u_int32_t curPacketRTPTimestamp =
-      ts->ourSubsession->rtpSource()->curPacketRTPTimestamp();
-  Boolean curPacketMarkerBit =
-      ts->ourSubsession->rtpSource()->curPacketMarkerBit();
-
+  // DEBUG:
   char log[1024];
-  sprintf(log,
-          "%s naluType=%-2u size=%-5u rSeq=%-5u rTS=%-7u mark=%d seq=%-7u"
-          " TS=%-12u PTS=%12ld.%06ld\n",
-          ts->ourSubsession->parentSession().sessionDescription(), naluType,
-          frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
-          curPacketRTPTimestamp - rtpInfoTS, curPacketMarkerBit,
-          curPacketRTPSeqNum, curPacketRTPTimestamp, presentationTime.tv_sec,
-          presentationTime.tv_usec);
+  sprintf(
+      log,
+      "%s npt=%5.3f naluType=%-2u size=%-5u rSeq=%-5u rTS=%-7u mark=%d seq=%-7u"
+      " TS=%-12u PTS=%12ld.%06ld\n",
+      ts->ourSubsession->parentSession().sessionDescription(),
+      ts->ourSubsession->getNormalPlayTime(presentationTime), naluType,
+      frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
+      curPacketRTPTimestamp - rtpInfoTS, curPacketMarkerBit, curPacketRTPSeqNum,
+      curPacketRTPTimestamp, presentationTime.tv_sec, presentationTime.tv_usec);
   ta->envir() << "[TileAgg] " << log;
 
-  // DEBUG: skip non-VCL
-  // if (naluType < 32)
   ts->queueFrame(buffer, frameSize, curPacketRTPTimestamp, curPacketRTPSeqNum,
                  curPacketMarkerBit);
 
   while (1) {
     Frame* frame = ta->aggregate();
 
-    // TODO: decode and play
+    // no frame available
     if (frame == NULL) break;
-
-    void play(TileAgg * agg, Frame * frame);
 
     // HACK: send VPS SPS PPS
     static Boolean send = True;
@@ -407,7 +397,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
           auto record = records[j];
           auto data = record.sPropBytes;
           auto size = record.sPropLength;
-          memmove(buf + frameSize, startCode, 4);
+          memmove(buf + frameSize, START_CODE, 4);
           memmove(buf + frameSize + 4, data, size);
           frameSize += size + 4;
         }
@@ -417,10 +407,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
     }
 
     que.push(frame);
-
-    // delete frame;
   };
-  // }
 
   // for next time
   ta->continuePlaying();
@@ -446,11 +433,10 @@ void play() {
   static struct SwsContext* sws;
   static AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
   static AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P;
-  static int screen_w = pixel_w;  // 1840 / 2;
-  static int screen_h = pixel_h;  // 992 / 2;
+  static int screen_w = 800;  // 1840 / 2;
+  static int screen_h = 600;  // 992 / 2;
   static SDL_Rect rect{.x = 0, .y = 0, .w = screen_w, .h = screen_h};
 
-  static u_int8_t startCode[] = {0, 0, 0, 1};
   int ret;
 
   if (init) {
@@ -565,7 +551,7 @@ Frame* TileAgg::aggregate() {
   int64_t earliestPlayTime = PLAY_TIME_UNAVAILABLE;
   TileState* ts;
   Frame* frame;
-  std::vector<Frame*> out;
+  std::vector<Frame*> candidates;
   u_int8_t buf[1024000];
   u_int8_t naluType;
   u_int8_t* data;
@@ -573,7 +559,7 @@ Frame* TileAgg::aggregate() {
   // get next play time
   for (int i = 0; i < fNumTiles; i++) {
     ts = fTiles[i];
-    do {
+    while (1) {
       playTime = ts->curPlayTime();
       if (playTime == PLAY_TIME_UNAVAILABLE) {
         envir()
@@ -583,33 +569,38 @@ Frame* TileAgg::aggregate() {
             << "\n";
         return NULL;
       }
+
+      if (fLastPlayTime == PLAY_TIME_UNAVAILABLE ||
+          timeGT(playTime, fLastPlayTime))
+        break;
+
       // drop timeout frame
-      if (playTime <= fLastPlayTime) {
-        delete ts->dequeueFrame();
-        envir() << "[TileAgg]"
-                << " drop frame " << i << " play_time=" << (unsigned)playTime
-                << "\n";
-        continue;
-      }
-      if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
-        earliestPlayTime = playTime;
-      else
-        earliestPlayTime = std::min(playTime, earliestPlayTime);
-    } while (earliestPlayTime == PLAY_TIME_UNAVAILABLE);
+      auto naluType = (ts->fFrames.front()->fData[0] & 0x7E) >> 1;
+      delete ts->dequeueFrame();
+      envir() << "[TileAgg]"
+              << ts->ourSubsession->parentSession().sessionDescription()
+              << " naluType=" << naluType << " drop frame " << i
+              << " play_time=" << (unsigned)playTime
+              << " last_play_time=" << (unsigned)fLastPlayTime << "\n";
+    }
+    if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
+      earliestPlayTime = playTime;
+    else
+      earliestPlayTime = std::min(playTime, earliestPlayTime);
   }
 
-  //将时间范围内的tile聚合，server发送的rtpTime由于rounding误差可能导致采样时间间隔有略微变化（个位数）
+  // 取出earliestPlayTime的所有tile
   for (int i = 0; i < fNumTiles; i++) {
     ts = fTiles[i];
 
     while ((playTime = ts->curPlayTime()) != PLAY_TIME_UNAVAILABLE) {
-      if (std::abs((int)(playTime - earliestPlayTime)) > 10) {
+      if (!timeEQ(playTime, earliestPlayTime, 10)) {
         break;
       }
 
       frame = ts->dequeueFrame();
       naluType = (frame->fData[0] & 0x7E) >> 1;
-      out.push_back(frame);
+      candidates.push_back(frame);
       envir() << "[TileAgg]"
               << " append Frame from "
               << ts->ourSubsession->parentSession().sessionDescription()
@@ -620,36 +611,91 @@ Frame* TileAgg::aggregate() {
     }
   }
 
-  // 对tile进行排序
-  for (auto i = 0; i < out.size(); i++) {
-    auto tile = out[i];
-    auto first = (tile->fData[2] & 0x80);  // first_slice_segment_in_pic_flag
-    if (first && i != 0) {
-      swap(out[i], out[0]);
+  // 选择tile
+  // 1. 解析slice sgement address
+  // 2. 选择相同address质量最高的tile
+  // 3. FIXME: 对选择的tile按address进行排序
+  std::map<u_int32_t, Frame*> outTilesMap;
+
+  for (unsigned i = 0; i < candidates.size(); i++) {
+    auto candidate = candidates[i];
+    auto data = candidate->fData;
+    u_int32_t sliceSegmentAddress = 0u;
+    auto bv = new BitVector(data, 0, candidate->fSize * 8);
+    bv->skipBits(1);                 // forbidden bit
+    auto naluType = bv->getBits(6);  // NAL Unit type
+    bv->skipBits(9);                 // Layer, TID
+    auto firstSliceSegmentInPicFlag =
+        bv->get1Bit();  // first slice segment in pic flag
+    auto rapPicFlag = (16 <= naluType && naluType <= 20);
+    if (rapPicFlag) bv->skipBits(1);  // no_output_of_prior_pics_flag
+    bv->get_expGolomb();              // PPS id
+
+    if (!firstSliceSegmentInPicFlag &&
+        False  // FIXME: && pps->dependent_slice_segments_enabled_flag
+    ) {
+      bv->skipBits(1); /*dependent_slice_segment_flag*/
       break;
     }
+    if (!firstSliceSegmentInPicFlag) {  // slice segment address
+      sliceSegmentAddress =
+          bv->getBits(9);  // FIXME: sps->bitsSliceSegmentAddress)
+    }
+    auto tile = outTilesMap[sliceSegmentAddress];
+    if (tile != NULL) {  // FIXME: select the best version of the tile
+      if (tile->fSize < candidate->fSize) {
+        outTilesMap[sliceSegmentAddress] = candidate;
+        delete tile;
+      } else {
+        delete candidate;
+      }
+      envir() << "[TileAgg]"
+              << " duplicate"
+              << " slice_segment_address=" << sliceSegmentAddress << "\n";
+    } else {
+      outTilesMap[sliceSegmentAddress] = candidate;
+    }
+
+    envir() << "[TileAgg]"
+            << " aggregate"
+            << " slice_segment_address=" << sliceSegmentAddress << "\n";
+  }
+
+  std::vector<Frame*> outTiles;
+  if (outTilesMap.find(0) != outTilesMap.end()) {  // first slice must be front
+    outTiles.push_back(outTilesMap[0]);
+    outTilesMap.erase(0);
+  }
+
+  for (auto it = outTilesMap.begin(); it != outTilesMap.end(); ++it) {
+    outTiles.push_back(it->second);
   }
 
   // append Frame
   // FIXME: reorder the tiles in scan order and
   // set the first_slice_in_frame_flag
-  size_t tt_num = out.size();
+  size_t tt_num = outTiles.size();
   u_int32_t tt_size = 0;
 
-  if (tt_num < fNumTiles) {
-    envir() << "[TileAgg]"
-            << " aggregate tt_num=" << (int)tt_num << "\n";
-  }
-
-  for (auto it = out.begin(); it != out.end(); it++) {
+  for (auto it = outTiles.begin(); it != outTiles.end(); it++) {
     frame = *it;
     data = frame->fData;
     naluType = (data[0] & 0x7E) >> 1;
-    memmove(buf + tt_size, startCode, 4);
+    memmove(buf + tt_size, START_CODE, 4);
     memmove(buf + tt_size + 4, frame->fData, frame->fSize);
     tt_size += 4 + frame->fSize;
     delete frame;
   }
+
+  // clean
+  candidates.clear();
+  outTilesMap.clear();
+  outTiles.clear();
+
+  envir() << "[TileAgg]"
+          << " play_time=" << (int)earliestPlayTime
+          << " aggregate tt_num=" << (int)tt_num << " tt_size=" << (int)tt_size
+          << "\n";
 
   Frame* outFrame = new Frame(buf, tt_size, earliestPlayTime);
 
@@ -665,11 +711,11 @@ Frame* TileAgg::aggregate() {
       os.open(outPath);
 
       // write VPS/SPS/PPS once
-      os.write(startCode, 4);
+      os.write(START_CODE, 4);
       os.write((char*)fVPS, fVPSSize);
-      os.write(startCode, 4);
+      os.write(START_CODE, 4);
       os.write((char*)fSPS, fSPSSize);
-      os.write(startCode, 4);
+      os.write(START_CODE, 4);
       os.write((char*)fPPS, fPPSSize);
     }
     // write file

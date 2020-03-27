@@ -3,6 +3,7 @@
 #include "TileAgg.hh"
 
 #include <assert.h>
+#include <glog/logging.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -180,9 +181,9 @@ void TileState::queueFrame(u_int8_t* data, unsigned size,
 
   // 检查rtpTimestamp倒退
   if (timeLT(rtpTimestamp, fLastRtpTimestamp)) {
-    ourAgg->envir() << "[TileState]"
-                    << " rtpTimestamp decrease! " << (int)rtpTimestamp << "<"
-                    << (int)fLastRtpTimestamp;
+    LOG(INFO) << "[TileState]"
+              << " rtpTimestamp decrease! " << (int)rtpTimestamp << "<"
+              << (int)fLastRtpTimestamp;
   }
 
   // 记录上一个rtpTimestamp
@@ -198,12 +199,12 @@ Frame* TileState::dequeueFrame() {
 
   // DEBUG:
   auto naluType = (frame->fData[0] & 0x7E) >> 1;
-  ourAgg->envir() << "[TileState]"
-                  << " " << ourSubsession->parentSession().sessionDescription()
-                  << " dequeue"
-                  << " naluType=" << naluType
-                  << " rtpSeqNumber=" << frame->fRtpSeqNumber
-                  << " size=" << frame->fSize << "\n";
+  LOG(INFO) << "[TileState]"
+            << " " << ourSubsession->parentSession().sessionDescription()
+            << " dequeue"
+            << " naluType=" << naluType
+            << " rtpSeqNumber=" << frame->fRtpSeqNumber
+            << " size=" << frame->fSize << "\n";
 
   // DEBUG: output tile dequeued frames
   {
@@ -271,13 +272,11 @@ void TileAgg::addTileSubsession(MediaSubsession* subsession) {
   fTiles[fNumTiles++] = ts;
   auto gs = subsession->rtpSource()->RTPgs()->socketNum();
   auto ret = increaseReceiveBufferTo(envir(), gs, 100 * 1024 * 1024);
-  envir() << "[TileAgg]"
-          << " increase receieve buffer to " << ret << "\n.";
+  LOG(INFO) << " increase receieve buffer to " << ret << "\n.";
 }
 
 Boolean TileAgg::startPlaying() {
-  envir() << "[TileAgg]"
-          << " " << this << " start playing.\n";
+  LOG(INFO) << " " << this << " start playing.\n";
   return continuePlaying();
 }
 Boolean TileAgg::continuePlaying() {
@@ -288,7 +287,7 @@ Boolean TileAgg::continuePlaying() {
                                                  afterTileGettingFrame, ts,
                                                  onTileSourceClosure, ts);
     // DEBUG:
-    // envir() << "[TileAgg]"
+    // LOG(INFO)
     //         << " " <<
     //         ts->ourSubsession->parentSession().sessionDescription()
     //         << " continue playing"
@@ -316,7 +315,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
 
   // DEBUG: buffer overflow
   if (numTruncatedBytes > 0) {
-    ta->envir()
+    LOG(INFO)
         << "TileAgg::afterGettingFrame(): The input frame data was "
            "too large for our buffer.  "
         << numTruncatedBytes
@@ -331,28 +330,29 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
   // RTPReceptionStats* stats = statsIter.next(True);
   // unsigned totReceivedNow = stats->totNumPacketsReceived();
   // unsigned totExpectedNow = stats->totNumPacketsExpected();
-  // ta->envir() << "[TileAgg]"
+  // LOG(INFO)
   //             << " " <<
   //             ts->ourSubsession->parentSession().sessionDescription()
   //             << " packets=" << totReceivedNow << "/" << totExpectedNow <<
   //             "\n";
 
   // DEBUG: randomly dropping, for lossness tolerance test
-  static bool once = true;
-  if (once) {
-    std::srand(std::time(
-        nullptr));  // this code path runs only once in the program's lifetime
-    once = false;
-  }
-  if (std::rand() % 1000 < 200) {
-    ta->envir() << "[TileAgg]"
-                << " dropping frame"
-                << " "
-                << ts->ourSubsession->parentSession().sessionDescription()
-                << " naluTyp=" << naluType << " size=" << frameSize << "\n";
-    ta->continuePlaying();
-    return;
-  }
+  // static bool once = true;
+  // if (once) {
+  //   std::srand(std::time(
+  //       nullptr));  // this code path runs only once in the program's
+  //       lifetime
+  //   once = false;
+  // }
+  // if (std::rand() % 1000 < 200) {
+  //   LOG(INFO)
+  //             << " dropping frame"
+  //             << " " <<
+  //             ts->ourSubsession->parentSession().sessionDescription()
+  //             << " naluTyp=" << naluType << " size=" << frameSize << "\n";
+  //   ta->continuePlaying();
+  //   return;
+  // }
 
   // DEBUG:
   char log[1024];
@@ -365,7 +365,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
       frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
       curPacketRTPTimestamp - rtpInfoTS, curPacketMarkerBit, curPacketRTPSeqNum,
       curPacketRTPTimestamp, presentationTime.tv_sec, presentationTime.tv_usec);
-  ta->envir() << "[TileAgg] " << log;
+  LOG(INFO) << log;
 
   ts->queueFrame(buffer, frameSize, curPacketRTPTimestamp, curPacketRTPSeqNum,
                  curPacketMarkerBit);
@@ -415,7 +415,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
 
 void play() {
   // DEBUG: flags
-  static Boolean scale = True;
+  static Boolean scale = False;
 
   static Boolean init = True;
   static AVCodecContext* avctx;
@@ -545,7 +545,7 @@ void play() {
 
 // FIXME: merge tiles, taking VPS/SPS/PPS recorrect in concern
 Frame* TileAgg::aggregate() {
-  envir() << "=========aggreating=========\n";
+  LOG(INFO) << "=========aggreating=========\n";
 
   int64_t playTime;
   int64_t earliestPlayTime = PLAY_TIME_UNAVAILABLE;
@@ -562,8 +562,8 @@ Frame* TileAgg::aggregate() {
     while (1) {
       playTime = ts->curPlayTime();
       if (playTime == PLAY_TIME_UNAVAILABLE) {
-        envir()
-            << "[TileAgg]"
+        LOG(INFO)
+
             << " awaiting tile "
             << fTiles[i]->ourSubsession->parentSession().sessionDescription()
             << "\n";
@@ -577,11 +577,10 @@ Frame* TileAgg::aggregate() {
       // drop timeout frame
       auto naluType = (ts->fFrames.front()->fData[0] & 0x7E) >> 1;
       delete ts->dequeueFrame();
-      envir() << "[TileAgg]"
-              << ts->ourSubsession->parentSession().sessionDescription()
-              << " naluType=" << naluType << " drop frame " << i
-              << " play_time=" << (unsigned)playTime
-              << " last_play_time=" << (unsigned)fLastPlayTime << "\n";
+      LOG(INFO) << ts->ourSubsession->parentSession().sessionDescription()
+                << " naluType=" << naluType << " drop frame " << i
+                << " play_time=" << (unsigned)playTime
+                << " last_play_time=" << (unsigned)fLastPlayTime << "\n";
     }
     if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
       earliestPlayTime = playTime;
@@ -601,13 +600,12 @@ Frame* TileAgg::aggregate() {
       frame = ts->dequeueFrame();
       naluType = (frame->fData[0] & 0x7E) >> 1;
       candidates.push_back(frame);
-      envir() << "[TileAgg]"
-              << " append Frame from "
-              << ts->ourSubsession->parentSession().sessionDescription()
-              << " type=" << naluType << " size=" << frame->fSize
-              << " play_time=" << (unsigned)playTime << " npt="
-              << (double)playTime / ts->ourSubsession->rtpTimestampFrequency()
-              << "\n";
+      LOG(INFO) << " append Frame from "
+                << ts->ourSubsession->parentSession().sessionDescription()
+                << " type=" << naluType << " size=" << frame->fSize
+                << " play_time=" << (unsigned)playTime << " npt="
+                << (double)playTime / ts->ourSubsession->rtpTimestampFrequency()
+                << "\n";
     }
   }
 
@@ -649,16 +647,14 @@ Frame* TileAgg::aggregate() {
       } else {
         delete candidate;
       }
-      envir() << "[TileAgg]"
-              << " duplicate"
-              << " slice_segment_address=" << sliceSegmentAddress << "\n";
+      LOG(INFO) << " duplicate"
+                << " slice_segment_address=" << sliceSegmentAddress << "\n";
     } else {
       outTilesMap[sliceSegmentAddress] = candidate;
     }
 
-    envir() << "[TileAgg]"
-            << " aggregate"
-            << " slice_segment_address=" << sliceSegmentAddress << "\n";
+    LOG(INFO) << " aggregate"
+              << " slice_segment_address=" << sliceSegmentAddress << "\n";
   }
 
   std::vector<Frame*> outTiles;
@@ -692,10 +688,9 @@ Frame* TileAgg::aggregate() {
   outTilesMap.clear();
   outTiles.clear();
 
-  envir() << "[TileAgg]"
-          << " play_time=" << (int)earliestPlayTime
-          << " aggregate tt_num=" << (int)tt_num << " tt_size=" << (int)tt_size
-          << "\n";
+  LOG(INFO) << " play_time=" << (int)earliestPlayTime
+            << " aggregate tt_num=" << (int)tt_num
+            << " tt_size=" << (int)tt_size << "\n";
 
   Frame* outFrame = new Frame(buf, tt_size, earliestPlayTime);
 
@@ -730,11 +725,10 @@ Frame* TileAgg::aggregate() {
 void TileAgg::onTileSourceClosure(void* clientData) {
   TileState* ts = (TileState*)clientData;
 
-  ts->ourAgg->envir() << "onTileSourceClosure " << ts << "\n";
+  LOG(INFO) << "onTileSourceClosure " << ts << "\n";
 }
 
 void TileAgg::doGetNextFrame() {
-  envir() << "[TileAgg]"
-          << " doGetNextFrame"
-          << "\n";
+  LOG(INFO) << " doGetNextFrame"
+            << "\n";
 }

@@ -20,11 +20,12 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 // client application.  For a full-featured RTSP client application - with much more functionality, and many options - see
 // "openRTSP": http://www.live555.com/openRTSP/
 
-#include "BasicUsageEnvironment.hh"
+#include "MyUsageEnvironment.hh"
 #include "TileAgg.hh"
 #include "liveMedia.hh"
 #include <thread>
 #include <signal.h>
+#include <glog/logging.h>
 
 
 void play();
@@ -77,9 +78,19 @@ TileAgg* ta;
 std::thread playThread(play);
 
 int main(int argc, char** argv) {
+  auto progName = argv[0];
+
+  // init glog
+  google::InitGoogleLogging(progName);
+  // FLAGS_logtostderr = 1; // only stderr
+  FLAGS_log_dir = "./glog";   // to file
+  FLAGS_alsologtostderr = 1;  // file and stderr
+  FLAGS_stderrthreshold = 0;  // INFO
+  FLAGS_minloglevel = 0;      // INFO
+
   // Begin by setting up our usage environment:
   TaskScheduler* scheduler = BasicTaskScheduler::createNew();
-  UsageEnvironment* env = BasicUsageEnvironment::createNew(*scheduler);
+  UsageEnvironment* env = MyUsageEnvironment::createNew(*scheduler);
   ta = TileAgg::createNew(*env);
 
   // We need at least one "rtsp://" URL argument:
@@ -342,12 +353,12 @@ void continueAfterPLAY(RTSPClient* rtspClient, int resultCode, char* resultStrin
     // using a RTCP "BYE").  This is optional.  If, instead, you want to keep the stream active - e.g., so you can later
     // 'seek' back within it and do another RTSP "PLAY" - then you can omit this code.
     // (Alternatively, if you don't want to receive the entire stream, you could set this timer for some shorter value.)
-    if (scs.duration > 0) {
-      unsigned const delaySlop = 2; // number of seconds extra to delay, after the stream's expected duration.  (This is optional.)
-      scs.duration += delaySlop;
-      unsigned uSecsToDelay = (unsigned)(scs.duration*1000000);
-      scs.streamTimerTask = env.taskScheduler().scheduleDelayedTask(uSecsToDelay, (TaskFunc*)streamTimerHandler, rtspClient);
-    }
+    // if (scs.duration > 0) {
+    //   unsigned const delaySlop = 2; // number of seconds extra to delay, after the stream's expected duration.  (This is optional.)
+    //   scs.duration += delaySlop;
+    //   unsigned uSecsToDelay = (unsigned)(scs.duration*1000000);
+    //   scs.streamTimerTask = env.taskScheduler().scheduleDelayedTask(uSecsToDelay, (TaskFunc*)streamTimerHandler, rtspClient);
+    // }
 
     env << *rtspClient << "Started playing session";
     if (scs.duration > 0) {

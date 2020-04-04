@@ -8,7 +8,7 @@ libUsageEnvironment_LIB_SUFFIX = $(LIB_SUFFIX)
 libgroupsock_LIB_SUFFIX = $(LIB_SUFFIX)
 ##### Change the following for your environment:
 COMPILE_OPTS =	$(INCLUDES)  -I/usr/local/include -I.  -DSOCKLEN_T=socklen_t -g -D_LARGEFILE_SOURCE=1 -D_FILE_OFFSET_BITS=64 -DDEBUG_RTP_TIMESTAMP=1 -DDEBUG_TIMESTAMPS=1
-COMPILE_OPTS += $$(pkg-config --cflags sdl2 libavcodec libavutil libavformat libswscale libglog)	
+COMPILE_OPTS += $$(pkg-config --cflags sdl2 libavcodec libavutil libavformat libswscale libglog glfw3)	
 C =			c
 C_COMPILER =		cc
 C_FLAGS =		$(COMPILE_OPTS)
@@ -22,26 +22,27 @@ CONSOLE_LINK_OPTS =	$(LINK_OPTS) -L/usr/local/lib
 LIBRARY_LINK =		ar cr 
 LIBRARY_LINK_OPTS =	
 LIB_SUFFIX =			a
-LIBS_FOR_CONSOLE_APPLICATION = -lpthread -lssl -lcrypto -lSDL2 -lavcodec -lavutil -lavformat -lswscale  -lglog
+LIBS_FOR_CONSOLE_APPLICATION = -lssl -lcrypto -lSDL2 -lavcodec -lavutil -lavformat -lswscale -lglog -ljsoncpp -lglfw3 -ldl -lGL -lpthread 
 LIBS_FOR_GUI_APPLICATION =
 EXE =
 ##### End of variables to change
 
 PREFIX = /usr/local
 
-all: tileagg$(EXE) abr$(EXE)
+all: tileagg$(EXE) abr$(EXE) #gl$(EXE)
 
 .$(C).$(OBJ):
 	$(C_COMPILER) -c $(C_FLAGS) $<
 .$(CPP).$(OBJ):
 	$(CPLUSPLUS_COMPILER) -c $(CPLUSPLUS_FLAGS) $<
 
-TILE_AGG_OBJS = main.$(OBJ) TileAgg.$(OBJ) MyUsageEnvironment.$(OBJ)
-ABR_OBJS = abr.$(OBJ) TileAgg.$(OBJ) MyUsageEnvironment.$(OBJ)
+TILE_AGG_OBJS = main.$(OBJ) TileAgg.$(OBJ) OurUsageEnvironment.$(OBJ)
+ABR_OBJS = abr.$(OBJ) TileAgg.$(OBJ) OurUsageEnvironment.$(OBJ) rtsp.$(OBJ) $(GL_OBJS)
+GL_OBJS = gl.$(OBJ) glad.$(OBJ) Sphere.$(OBJ)
 
-TileAgg.$(CPP):	TileAgg.hh
-main.$(CPP): TileAgg.hh MyUsageEnvironment.hh
-abr.$(CPP): TileAgg.hh MyUsageEnvironment.hh
+TileAgg.$(CPP): include/TileAgg.hh
+main.$(CPP): include/TileAgg.hh include/OurUsageEnvironment.hh
+abr.$(CPP): include/TileAgg.hh include/OurUsageEnvironment.hh include/config.hh include/ToString.hh include/rtsp.hh
 
 USAGE_ENVIRONMENT_LIB = $(LIVE_LIB)/libUsageEnvironment.$(libUsageEnvironment_LIB_SUFFIX)
 BASIC_USAGE_ENVIRONMENT_LIB = $(LIVE_LIB)/libBasicUsageEnvironment.$(libBasicUsageEnvironment_LIB_SUFFIX)

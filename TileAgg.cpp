@@ -13,10 +13,13 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <list>
 #include <map>
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include "BlockingQueue.h"
 
 // live555
 #include "Base64.hh"
@@ -42,6 +45,8 @@ extern "C" {
 using namespace std;
 using namespace std::chrono;
 
+#define TEST_OUT_DIR "test/"
+
 void play();
 
 static char START_CODE[] = {0, 0, 0, 1};
@@ -60,45 +65,6 @@ Boolean timeGT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
   return a > b;
 }
 
-template <typename T>
-class BlockingQueue {
- public:
-  BlockingQueue(u_int32_t maxSize = 102400) : fMaxSize(maxSize) {}
-
-  void push(const T& item, long timeout = 0) {
-    {
-      std::unique_lock<std::mutex> lck(fMtx);
-      while (fQue.size() >= fMaxSize) {
-        fCondNotFull.wait(lck);
-      }
-      fQue.push_back(item);
-    }
-    fCondNotEmpty.notify_all();
-  }
-
-  T pop(long timeout = 0) {
-    static int cnt = 0;
-    T item;
-    {
-      cnt++;
-      std::unique_lock<std::mutex> lck(fMtx);
-      while (fQue.empty()) {
-        fCondNotEmpty.wait(lck);
-      }
-      item = fQue.front();
-      fQue.pop_front();
-    }
-    fCondNotFull.notify_all();
-    return item;
-  }
-
- private:
-  u_int32_t fMaxSize;
-  std::deque<T> fQue;
-  std::mutex fMtx;
-  std::condition_variable fCondNotFull, fCondNotEmpty;
-};
-
 BlockingQueue<Frame*> que;
 
 Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
@@ -114,7 +80,7 @@ Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
 Frame::~Frame() { delete[] fData; }
 
 // npt*frequency
-int64_t TileState::curPlayTime() {
+int64_t TileBuffer::curPlayTime() {
   // no available frames
   if (fNumAvailableFrames == 0) return PLAY_TIME_UNAVAILABLE;
 
@@ -128,14 +94,14 @@ int64_t TileState::curPlayTime() {
   // return fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
 }
 
-TileState::TileState(TileAgg* agg, MediaSubsession* subsession)
+TileBuffer::TileBuffer(TileAgg* agg, MediaSubsession* subsession)
     : ourAgg(agg), ourSubsession(subsession), fNumAvailableFrames(0) {
   fLastRtpTimestamp = PLAY_TIME_UNAVAILABLE;
 }
 
-void TileState::queueFrame(u_int8_t* data, unsigned size,
-                           u_int64_t rtpTimestamp, u_int32_t rtpSeq,
-                           Boolean rtpMarker) {
+void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
+                            u_int64_t rtpTimestamp, u_int32_t rtpSeq,
+                            Boolean rtpMarker) {
   auto naluType = (data[0] & 0x7E) >> 1;
   if (naluType >= 32) {
     return;
@@ -150,8 +116,8 @@ void TileState::queueFrame(u_int8_t* data, unsigned size,
       m[this] = os = new std::ofstream();
       char outPath[128];
       auto desc = ourSubsession->parentSession().sessionDescription();
-      auto fn = strrchr(desc, '/') + 1;
-      sprintf(outPath, "que_%s.265", fn);
+      auto fn = strrchr(desc, '/');
+      sprintf(outPath, TEST_OUT_DIR "que_%s.265", fn ? fn + 1 : desc);
       os->open(outPath);
 
       // write VPS/SPS/PPS once
@@ -190,7 +156,7 @@ void TileState::queueFrame(u_int8_t* data, unsigned size,
   fLastRtpTimestamp = rtpTimestamp;
 }
 
-Frame* TileState::dequeueFrame() {
+Frame* TileBuffer::dequeueFrame() {
   if (fNumAvailableFrames == 0) return NULL;
 
   fNumAvailableFrames--;
@@ -216,8 +182,8 @@ Frame* TileState::dequeueFrame() {
       m[this] = os = new std::ofstream();
       char outPath[128];
       auto desc = ourSubsession->parentSession().sessionDescription();
-      auto fn = strrchr(desc, '/') + 1;
-      sprintf(outPath, "deq_%s.265", fn);
+      auto fn = strrchr(desc, '/');
+      sprintf(outPath, TEST_OUT_DIR "deq_%s.265", fn ? fn + 1 : desc);
       os->open(outPath);
 
       // write VPS/SPS/PPS once
@@ -245,7 +211,8 @@ TileAgg::TileAgg(UsageEnvironment& env) : FramedSource(env) {
 
 TileAgg::~TileAgg() {}
 
-void TileAgg::addTileSubsession(MediaSubsession* subsession) {
+void TileAgg::addTile(MediaSubsession* subsession) {
+  auto tb = new TileBuffer(this, subsession);
   do {                        // parse VPS SPS PPS
     if (fVPS != NULL) break;  // init once
     u_int8_t** ps[] = {&fVPS, &fSPS, &fPPS};
@@ -267,12 +234,19 @@ void TileAgg::addTileSubsession(MediaSubsession* subsession) {
   } while (0);
 
   // increase socket receieve buffer
-  TileState* ts;
-  ts = new TileState(this, subsession);
-  fTiles[fNumTiles++] = ts;
+  fTiles.push_back(tb);
   auto gs = subsession->rtpSource()->RTPgs()->socketNum();
   auto ret = increaseReceiveBufferTo(envir(), gs, 100 * 1024 * 1024);
   LOG(INFO) << " increase receieve buffer to " << ret << "\n.";
+}
+
+void TileAgg::removeTile(MediaSubsession* subsession) {
+  auto it = fTiles.begin();
+  for (; it != fTiles.end(); it++) {
+    auto tb = *it;
+    if (tb->ourSubsession == subsession) break;
+  }
+  fTiles.erase(it);
 }
 
 Boolean TileAgg::startPlaying() {
@@ -280,8 +254,7 @@ Boolean TileAgg::startPlaying() {
   return continuePlaying();
 }
 Boolean TileAgg::continuePlaying() {
-  for (int i = 0; i < fNumTiles; i++) {
-    TileState* ts = fTiles[i];
+  for (auto& ts : fTiles) {
     if (ts->ourSubsession->rtpSource()->isCurrentlyAwaitingData()) continue;
     ts->ourSubsession->rtpSource()->getNextFrame(ts->fBuffer, MAX_TILE_BUF_SIZE,
                                                  afterTileGettingFrame, ts,
@@ -300,7 +273,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
                                      unsigned numTruncatedBytes,
                                      struct timeval presentationTime,
                                      unsigned durationInMicroseconds) {
-  auto ts = (TileState*)clientData;
+  auto ts = (TileBuffer*)clientData;
   auto ta = ts->ourAgg;
   auto buffer = ts->fBuffer;
   auto naluType = (buffer[0] & 0x7E) >> 1;
@@ -377,36 +350,36 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
     if (frame == NULL) break;
 
     // HACK: send VPS SPS PPS
-    static Boolean send = True;
-    if (send) {
-      send = False;
+    // static Boolean send = True;
+    // if (send) {
+    //   send = False;
 
-      u_int8_t buf[10240];
-      u_int32_t frameSize = 0;
-      Frame* frame;
+    //   u_int8_t buf[10240];
+    //   u_int32_t frameSize = 0;
+    //   Frame* frame;
 
-      MediaSubsession* subsession = ta->fTiles[0]->ourSubsession;
-      char const* base64List[3] = {subsession->fmtp_spropvps(),
-                                   subsession->fmtp_spropsps(),
-                                   subsession->fmtp_sproppps()};
-      for (int i = 0; i < 3; i++) {
-        auto base64 = base64List[i];
-        unsigned num;
-        auto records = parseSPropParameterSets(base64, num);
-        for (unsigned j = 0; j < num; j++) {
-          auto record = records[j];
-          auto data = record.sPropBytes;
-          auto size = record.sPropLength;
-          memmove(buf + frameSize, START_CODE, 4);
-          memmove(buf + frameSize + 4, data, size);
-          frameSize += size + 4;
-        }
-      }
-      frame = new Frame(buf, frameSize);
-      que.push(frame);
-    }
+    //   MediaSubsession* subsession = ta->fTiles.front()->ourSubsession;
+    //   char const* base64List[3] = {subsession->fmtp_spropvps(),
+    //                                subsession->fmtp_spropsps(),
+    //                                subsession->fmtp_sproppps()};
+    //   for (int i = 0; i < 3; i++) {
+    //     auto base64 = base64List[i];
+    //     unsigned num;
+    //     auto records = parseSPropParameterSets(base64, num);
+    //     for (unsigned j = 0; j < num; j++) {
+    //       auto record = records[j];
+    //       auto data = record.sPropBytes;
+    //       auto size = record.sPropLength;
+    //       memmove(buf + frameSize, START_CODE, 4);
+    //       memmove(buf + frameSize + 4, data, size);
+    //       frameSize += size + 4;
+    //     }
+    //   }
+    //   frame = new Frame(buf, frameSize);
+    //   que.push(frame);
+    // }
 
-    que.push(frame);
+    // que.push(frame);
   };
 
   // for next time
@@ -422,7 +395,8 @@ void play() {
   static AVCodec* codec;
   static AVPacket* avpkt;
   static AVFrame avframe, frameYUV;
-  static int pixel_w = 1840, pixel_h = 992;
+  // static int pixel_w = 1840, pixel_h = 992;
+  static int pixel_w = 1280, pixel_h = 720;
   // static int pixel_w = 896, pixel_h = 512;
   static u_int8_t* buffer;
 
@@ -433,8 +407,8 @@ void play() {
   static struct SwsContext* sws;
   static AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
   static AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P;
-  static int screen_w = 800;  // 1840 / 2;
-  static int screen_h = 600;  // 992 / 2;
+  static int screen_w = pixel_w;  // 1840 / 2;
+  static int screen_h = pixel_h;  // 992 / 2;
   static SDL_Rect rect{.x = 0, .y = 0, .w = screen_w, .h = screen_h};
 
   int ret;
@@ -549,7 +523,6 @@ Frame* TileAgg::aggregate() {
 
   int64_t playTime;
   int64_t earliestPlayTime = PLAY_TIME_UNAVAILABLE;
-  TileState* ts;
   Frame* frame;
   std::vector<Frame*> candidates;
   u_int8_t buf[1024000];
@@ -557,16 +530,14 @@ Frame* TileAgg::aggregate() {
   u_int8_t* data;
 
   // get next play time
-  for (int i = 0; i < fNumTiles; i++) {
-    ts = fTiles[i];
+  for (auto ts : fTiles) {
     while (1) {
       playTime = ts->curPlayTime();
       if (playTime == PLAY_TIME_UNAVAILABLE) {
         LOG(INFO)
 
             << " awaiting tile "
-            << fTiles[i]->ourSubsession->parentSession().sessionDescription()
-            << "\n";
+            << ts->ourSubsession->parentSession().sessionDescription() << "\n";
         return NULL;
       }
 
@@ -577,10 +548,12 @@ Frame* TileAgg::aggregate() {
       // drop timeout frame
       auto naluType = (ts->fFrames.front()->fData[0] & 0x7E) >> 1;
       delete ts->dequeueFrame();
-      LOG(INFO) << ts->ourSubsession->parentSession().sessionDescription()
-                << " naluType=" << naluType << " drop frame " << i
-                << " play_time=" << (unsigned)playTime
-                << " last_play_time=" << (unsigned)fLastPlayTime << "\n";
+
+      LOG(INFO) << " drop frame "
+                << ts->ourSubsession->parentSession().sessionDescription()
+                << " naluType=" << naluType
+                << " play_time=" << (double)playTime / 90000
+                << " last_play_time=" << (double)fLastPlayTime / 90000 << "\n";
     }
     if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
       earliestPlayTime = playTime;
@@ -589,9 +562,7 @@ Frame* TileAgg::aggregate() {
   }
 
   // 取出earliestPlayTime的所有tile
-  for (int i = 0; i < fNumTiles; i++) {
-    ts = fTiles[i];
-
+  for (auto ts : fTiles) {
     while ((playTime = ts->curPlayTime()) != PLAY_TIME_UNAVAILABLE) {
       if (!timeEQ(playTime, earliestPlayTime, 10)) {
         break;
@@ -600,12 +571,12 @@ Frame* TileAgg::aggregate() {
       frame = ts->dequeueFrame();
       naluType = (frame->fData[0] & 0x7E) >> 1;
       candidates.push_back(frame);
-      LOG(INFO) << " append Frame from "
-                << ts->ourSubsession->parentSession().sessionDescription()
-                << " type=" << naluType << " size=" << frame->fSize
-                << " play_time=" << (unsigned)playTime << " npt="
-                << (double)playTime / ts->ourSubsession->rtpTimestampFrequency()
-                << "\n";
+      envir() << " append Frame from "
+              << ts->ourSubsession->parentSession().sessionDescription()
+              << " naluType=" << naluType << " size=" << frame->fSize
+              << " play_time=" << (unsigned)playTime << " npt="
+              << (double)playTime / ts->ourSubsession->rtpTimestampFrequency()
+              << "\n";
     }
   }
 
@@ -619,25 +590,25 @@ Frame* TileAgg::aggregate() {
     auto candidate = candidates[i];
     auto data = candidate->fData;
     u_int32_t sliceSegmentAddress = 0u;
-    auto bv = new BitVector(data, 0, candidate->fSize * 8);
-    bv->skipBits(1);                 // forbidden bit
-    auto naluType = bv->getBits(6);  // NAL Unit type
-    bv->skipBits(9);                 // Layer, TID
+    BitVector bv(data, 0, candidate->fSize * 8);
+    bv.skipBits(1);                 // forbidden bit
+    auto naluType = bv.getBits(6);  // NAL Unit type
+    bv.skipBits(9);                 // Layer, TID
     auto firstSliceSegmentInPicFlag =
-        bv->get1Bit();  // first slice segment in pic flag
+        bv.get1Bit();  // first slice segment in pic flag
     auto rapPicFlag = (16 <= naluType && naluType <= 20);
-    if (rapPicFlag) bv->skipBits(1);  // no_output_of_prior_pics_flag
-    bv->get_expGolomb();              // PPS id
+    if (rapPicFlag) bv.skipBits(1);  // no_output_of_prior_pics_flag
+    bv.get_expGolomb();              // PPS id
 
     if (!firstSliceSegmentInPicFlag &&
         False  // FIXME: && pps->dependent_slice_segments_enabled_flag
     ) {
-      bv->skipBits(1); /*dependent_slice_segment_flag*/
+      bv.skipBits(1); /*dependent_slice_segment_flag*/
       break;
     }
     if (!firstSliceSegmentInPicFlag) {  // slice segment address
       sliceSegmentAddress =
-          bv->getBits(9);  // FIXME: sps->bitsSliceSegmentAddress)
+          bv.getBits(9);  // FIXME: sps->bitsSliceSegmentAddress)
     }
     auto tile = outTilesMap[sliceSegmentAddress];
     if (tile != NULL) {  // FIXME: select the best version of the tile
@@ -654,6 +625,7 @@ Frame* TileAgg::aggregate() {
     }
 
     LOG(INFO) << " aggregate"
+              << " bit_index=" << bv.curBitIndex()
               << " slice_segment_address=" << sliceSegmentAddress << "\n";
   }
 
@@ -661,6 +633,7 @@ Frame* TileAgg::aggregate() {
   if (outTilesMap.find(0) != outTilesMap.end()) {  // first slice must be front
     outTiles.push_back(outTilesMap[0]);
     outTilesMap.erase(0);
+  } else {
   }
 
   for (auto it = outTilesMap.begin(); it != outTilesMap.end(); ++it) {
@@ -688,11 +661,15 @@ Frame* TileAgg::aggregate() {
   outTilesMap.clear();
   outTiles.clear();
 
-  LOG(INFO) << " play_time=" << (int)earliestPlayTime
+  LOG(INFO) << " play_time=" << (double)earliestPlayTime / 90000
             << " aggregate tt_num=" << (int)tt_num
             << " tt_size=" << (int)tt_size << "\n";
 
   Frame* outFrame = new Frame(buf, tt_size, earliestPlayTime);
+  if (!outFrame) {
+    LOG(FATAL) << "new failed" << endl;
+    return NULL;
+  }
 
   fLastPlayTime = earliestPlayTime;
 
@@ -702,7 +679,7 @@ Frame* TileAgg::aggregate() {
   if (frame != NULL) {
     if (init) {  // file init once
       init = False;
-      char outPath[] = "agg.265";
+      char outPath[] = TEST_OUT_DIR "agg.265";
       os.open(outPath);
 
       // write VPS/SPS/PPS once
@@ -719,11 +696,13 @@ Frame* TileAgg::aggregate() {
     os.flush();
   }
 
+  if (onNextFrameCB && outFrame) onNextFrameCB(outFrame);
+
   return outFrame;
 }
 
 void TileAgg::onTileSourceClosure(void* clientData) {
-  TileState* ts = (TileState*)clientData;
+  TileBuffer* ts = (TileBuffer*)clientData;
 
   LOG(INFO) << "onTileSourceClosure " << ts << "\n";
 }

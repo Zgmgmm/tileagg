@@ -20,7 +20,7 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 // client application.  For a full-featured RTSP client application - with much more functionality, and many options - see
 // "openRTSP": http://www.live555.com/openRTSP/
 
-#include "MyUsageEnvironment.hh"
+#include "OurUsageEnvironment.hh"
 #include "TileAgg.hh"
 #include "liveMedia.hh"
 #include <thread>
@@ -77,20 +77,50 @@ char eventLoopWatchVariable = 0;
 TileAgg* ta;
 std::thread playThread(play);
 
+void pickTiles(void* clientData) {
+  // TEST:
+  static auto doinit = True;
+  static auto tiles=ta->fTiles;
+  static TileBuffer* first;
+  if (doinit) {
+    for (auto tb : ta->fTiles) {
+      auto desc = tb->ourSubsession->parentSession().sessionDescription();
+      if (strstr(desc, "vr_1500000_3x3_0x0x384x256")) {
+        first = tb;
+        tiles.remove(tb);
+        break;
+      }
+    }
+    doinit = False;
+  }
+  ta->fTiles.clear();
+  ta->fTiles.push_back(first);
+  for (int i = 0; i <4; i++) {
+    auto t=tiles.front();
+    ta->fTiles.push_back(t);
+    tiles.pop_front();
+    tiles.push_back(t);
+  }
+
+
+  // ta->envir().taskScheduler().scheduleDelayedTask(
+  //     1.6*1e6, (TaskFunc*)pickTiles, ta);
+}
+
 int main(int argc, char** argv) {
   auto progName = argv[0];
 
   // init glog
   google::InitGoogleLogging(progName);
   // FLAGS_logtostderr = 1; // only stderr
-  FLAGS_log_dir = "./glog";   // to file
+  FLAGS_log_dir = "./log";   // to file
   FLAGS_alsologtostderr = 1;  // file and stderr
   FLAGS_stderrthreshold = 0;  // INFO
   FLAGS_minloglevel = 0;      // INFO
 
   // Begin by setting up our usage environment:
   TaskScheduler* scheduler = BasicTaskScheduler::createNew();
-  UsageEnvironment* env = MyUsageEnvironment::createNew(*scheduler);
+  UsageEnvironment* env = OurUsageEnvironment::createNew(*scheduler);
   ta = TileAgg::createNew(*env);
 
   // We need at least one "rtsp://" URL argument:
@@ -106,6 +136,9 @@ int main(int argc, char** argv) {
   for (int i = 1; i <= argc-1; ++i) {
     openURL(*env, argv[0], argv[i]);
   }
+
+  env->taskScheduler().scheduleDelayedTask(
+      3*1e6, (TaskFunc*)pickTiles, ta);
 
   // All subsequent activity takes place within the event loop:
   env->taskScheduler().doEventLoop(&eventLoopWatchVariable);
@@ -244,7 +277,7 @@ void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode, char* resultS
       env << *rtspClient << "This session has no media subsessions (i.e., no \"m=\" lines)\n";
       break;
     }
-
+ 
     // Then, create and set up our data source objects for the session.  We do this by iterating over the session's 'subsessions',
     // calling "MediaSubsession::initiate()", and then sending a RTSP "SETUP" command, on each one.
     // (Each 'subsession' will have its own data source.)
@@ -320,8 +353,8 @@ void continueAfterSETUP(RTSPClient* rtspClient, int resultCode, char* resultStri
 
     // Having successfully setup the subsession, create a data sink for it, and call "startPlaying()" on it.
     // (This will prepare the data sink to receive data; the actual flow of data from the client won't start happening until later,
-    // after we've sent a RTSP "PLAY" command.)
-    ta->addTileSubsession(scs.subsession);
+    // after we've sent a RTSP "PLAY" command.
+    ta->addTile(scs.subsession);
     ta->startPlaying();
     scs.subsession->miscPtr = rtspClient;
 

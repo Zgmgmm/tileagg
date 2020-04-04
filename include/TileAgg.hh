@@ -3,6 +3,7 @@
 #define _TILEAGG_HH
 
 #include <deque>
+#include <list>
 
 #include "BasicUsageEnvironment.hh"
 #include "liveMedia.hh"
@@ -10,7 +11,7 @@
 #define PLAY_TIME_UNAVAILABLE -1u
 
 class TileAgg;
-class TileState;
+class TileBuffer;
 
 class Frame {
  public:
@@ -25,9 +26,9 @@ class Frame {
   u_int32_t fRtpSeqNumber;
 };
 
-class TileState {
+class TileBuffer {
  public:
-  TileState(TileAgg* agg, MediaSubsession* subsession = NULL);
+  TileBuffer(TileAgg* agg, MediaSubsession* subsession = NULL);
 
   void queueFrame(u_int8_t* data, unsigned size, u_int64_t rtpTimestamp,
                   u_int32_t rtpSeq, Boolean rtpMarker);
@@ -58,7 +59,10 @@ class TileAgg : public FramedSource {
   virtual void doGetNextFrame();
 
  public:
-  void addTileSubsession(MediaSubsession* subsession);
+  void addTile(MediaSubsession* subsession);
+  void removeTile(MediaSubsession* subsession);
+  typedef void onNextFrameFunc(Frame* frame);
+  void setOnNextFrameCB(onNextFrameFunc* cb) { onNextFrameCB = cb; }
   Boolean startPlaying();
 
   //  protected:
@@ -75,7 +79,8 @@ class TileAgg : public FramedSource {
   virtual ~TileAgg();
 
   //  private:
-  TileState* fTiles[64];
+  onNextFrameFunc* onNextFrameCB;
+  std::list<TileBuffer*> fTiles;
   u_int8_t fNumTiles;
   int64_t fLastPlayTime;
 

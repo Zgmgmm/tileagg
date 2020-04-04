@@ -1,6 +1,8 @@
 LIVE_INCLUDE = /usr/local/include
 LIVE_LIB = /usr/local/lib
-INCLUDES = -Iinclude -I$(LIVE_INCLUDE)/UsageEnvironment -I$(LIVE_INCLUDE)/groupsock/ -I$(LIVE_INCLUDE)/liveMedia -I$(LIVE_INCLUDE)/BasicUsageEnvironment\
+INCLUDE = ../include
+BIN = ../bin
+INCLUDES = -I$(INCLUDE) -I$(LIVE_INCLUDE)/UsageEnvironment -I$(LIVE_INCLUDE)/groupsock/ -I$(LIVE_INCLUDE)/liveMedia -I$(LIVE_INCLUDE)/BasicUsageEnvironment\
 # Default library filename suffixes for each library that we link with.  The "config.*" file might redefine these later.
 libliveMedia_LIB_SUFFIX = $(LIB_SUFFIX)
 libBasicUsageEnvironment_LIB_SUFFIX = $(LIB_SUFFIX)
@@ -29,7 +31,10 @@ EXE =
 
 PREFIX = /usr/local
 
-all: tileagg$(EXE) abr$(EXE) #gl$(EXE)
+all: tileagg$(EXE) abr$(EXE)
+	mkdir -p $(BIN)
+	cp tileagg$(EXE) abr$(EXE) $(BIN)
+	cp fragment_shader.glsl vertex_shader.glsl $(BIN)
 
 .$(C).$(OBJ):
 	$(C_COMPILER) -c $(C_FLAGS) $<
@@ -40,9 +45,9 @@ TILE_AGG_OBJS = main.$(OBJ) TileAgg.$(OBJ) OurUsageEnvironment.$(OBJ)
 ABR_OBJS = abr.$(OBJ) TileAgg.$(OBJ) OurUsageEnvironment.$(OBJ) rtsp.$(OBJ) $(GL_OBJS)
 GL_OBJS = gl.$(OBJ) glad.$(OBJ) Sphere.$(OBJ)
 
-TileAgg.$(CPP): include/TileAgg.hh
-main.$(CPP): include/TileAgg.hh include/OurUsageEnvironment.hh
-abr.$(CPP): include/TileAgg.hh include/OurUsageEnvironment.hh include/config.hh include/ToString.hh include/rtsp.hh
+TileAgg.$(CPP): $(INCLUDE)/TileAgg.hh
+main.$(CPP): $(INCLUDE)/TileAgg.hh $(INCLUDE)/OurUsageEnvironment.hh
+abr.$(CPP): $(INCLUDE)/TileAgg.hh $(INCLUDE)/OurUsageEnvironment.hh $(INCLUDE)/config.hh $(INCLUDE)/ToString.hh $(INCLUDE)/rtsp.hh
 
 USAGE_ENVIRONMENT_LIB = $(LIVE_LIB)/libUsageEnvironment.$(libUsageEnvironment_LIB_SUFFIX)
 BASIC_USAGE_ENVIRONMENT_LIB = $(LIVE_LIB)/libBasicUsageEnvironment.$(libBasicUsageEnvironment_LIB_SUFFIX)
@@ -59,7 +64,7 @@ abr$(EXE): $(ABR_OBJS)  $(LOCAL_LIBS)
 	$(LINK)$@ $(CONSOLE_LINK_OPTS) $(ABR_OBJS) $(LIBS) 
 
 clean:
-	-rm -rf *.$(OBJ) $(ALL) core *.core *~ include/*~
+	-rm -rf *.$(OBJ) *~ $(INCLUDE)/*~
 
 install: $(ALL)
 	  install -d $(DESTDIR)$(PREFIX)/bin

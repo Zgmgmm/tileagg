@@ -1,15 +1,19 @@
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
-#include "camera.h"
-#include "shader_m.h"
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <thread>
+
+#include "glad/glad.h"  // glad必须在GLFW/GL之前include
+#include "GL/gl.h"
+#include "GLFW/glfw3.h"
+#include "Sphere.h"
+#include "camera.h"
+#include "glm/glm.hpp"
+#include "glm/gtc/matrix_transform.hpp"
+#include "glm/gtc/type_ptr.hpp"
+#include "shader_m.h"
+#include "BlockingQueue.h"
+// #define STB_IMAGE_IMPLEMENTATION
+// #include "stb_image.h"
 
 // FFMPEG
 extern "C" {
@@ -21,10 +25,6 @@ extern "C" {
 #include "libavutil/time.h"
 #include "libswscale/swscale.h"
 }
-
-#include "BlockingQueue.h"
-#include "GL/gl.h"
-#include "Sphere.h"
 
 using namespace std;
 
@@ -114,19 +114,40 @@ int rendorThreadFunc() {
 
   // build and compile our shader zprogram
   // ------------------------------------
-  Shader ourShader("camera.vs", "camera.fs");
+  Shader ourShader("vertex_shader.glsl", "fragment_shader.glsl");
 
   // set up vertex data (and buffer(s)) and configure vertex attributes
   // ------------------------------------------------------------------
+
+#ifndef GL_RENDOR_SPHERE
+  // rectangle
+  const float vertices[] = {
+      // positions          // colors           // texture coords
+      1.0f,  0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 0.0f, 0.0f,  // bottom left
+      1.0f,  0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,  // bottom right
+      -1.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,  // top right
+      -1.0f, 0.0f, 1.0f,  1.0f, 1.0f, 0.0f, 1.0f, 0.0f   // top left
+  };
+  unsigned int indices[] = {
+      0, 1, 3,  // first triangle
+      1, 2, 3   // second triangle
+  };
+  const unsigned int lineIndices[] = {0, 1, 1, 3, 3, 0, 1, 2, 2, 3, 3, 1};
+  unsigned size = sizeof(vertices);
+  unsigned indexSize = sizeof(indices);
+  unsigned lineIndexSize = sizeof(lineIndices);
+  unsigned stride = 8 * sizeof(float);
+  camera.Position = glm::vec3(0.0f, 0.0f, 1.0f);
+#else
+  // sphere
   const float* vertices = sphere.getInterleavedVertices();
   const unsigned int* indices = sphere.getIndices();
   const unsigned int* lineIndices = sphere.getLineIndices();
-
   unsigned size = sphere.getInterleavedVertexSize();
   unsigned indexSize = sphere.getIndexSize();
   unsigned lineIndexSize = sphere.getLineIndexSize();
-
   unsigned stride = sphere.getInterleavedStride();
+#endif
 
   unsigned int VBO, VAO, EBO, EBO_lines;
   glGenVertexArrays(1, &VAO);
@@ -170,20 +191,20 @@ int rendorThreadFunc() {
   glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
   glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
   glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
-  // load image, create texture and generate mipmaps
-  int width, height, nrChannels;
-  stbi_set_flip_vertically_on_load(
-      false);  // tell stb_image.h to flip loaded texture's on the y-axis.
-  unsigned char* data = stbi_load("resources/textures/earth2048.bmp", &width,
-                                  &height, &nrChannels, 0);
-  if (data) {
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB,
-                 GL_UNSIGNED_BYTE, data);
-    // glGenerateMipmap(GL_TEXTURE_2D);
-  } else {
-    std::cout << "Failed to load texture" << std::endl;
-  }
-  stbi_image_free(data);
+  // // load image, create texture and generate mipmaps
+  // int width, height, nrChannels;
+  // stbi_set_flip_vertically_on_load(
+  //     false);  // tell stb_image.h to flip loaded texture's on the y-axis.
+  // unsigned char* data = stbi_load("resources/textures/earth2048.bmp", &width,
+  //                                 &height, &nrChannels, 0);
+  // if (data) {
+  //   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB,
+  //                GL_UNSIGNED_BYTE, data);
+  //   // glGenerateMipmap(GL_TEXTURE_2D);
+  // } else {
+  //   std::cout << "Failed to load texture" << std::endl;
+  // }
+  // stbi_image_free(data);
 
   // tell opengl for each sampler to which texture unit it belongs to (only has
   // to be done once)
@@ -224,15 +245,18 @@ int rendorThreadFunc() {
     // activate shader
     ourShader.use();
 
+
     // pass projection matrix to shader (note that in this case it could change
     // every frame)
-    glm::mat4 projection =
+    glm::mat4 projection(1.0f), view(1.0f);
+#ifdef GL_RENDOR_SPHERE
+    projection =
         glm::perspective(glm::radians(camera.Zoom),
                          (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-    ourShader.setMat4("projection", projection);
-
     // camera/view transformation
-    glm::mat4 view = camera.GetViewMatrix();
+    view = camera.GetViewMatrix();
+#endif
+    ourShader.setMat4("projection", projection);
     ourShader.setMat4("view", view);
 
     // render boxes
@@ -348,6 +372,4 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
   camera.ProcessMouseScroll(yoffset);
 }
 
-void updateTexture(u_int8_t *data, int width, int height){
-
-}
+void updateTexture(u_int8_t* data, int width, int height) {}

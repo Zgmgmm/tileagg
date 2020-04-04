@@ -1,7 +1,6 @@
 #include <signal.h>
 
 #include <fstream>
-#include <liveMedia.hh>
 #include <thread>
 #include <vector>
 
@@ -12,6 +11,7 @@
 #include "config.hh"
 #include "glog/logging.h"
 #include "json/json.h"
+#include "liveMedia.hh"
 #include "misc.hh"
 #include "rtsp.hh"
 
@@ -522,7 +522,7 @@ void decoderThreadFunc() {
   avpkt = av_packet_alloc();
 
   while (1) {
-    auto frame = frameQue.pop(); 
+    auto frame = frameQue.pop();
 
     if (av_new_packet(avpkt, frame->fSize)) LOG(ERROR) << "error";
 
@@ -559,7 +559,7 @@ void decoderThreadFunc() {
       // void updateTexture(void* data, int width, int height);
       // updateTexture(dstFrame->data[0], dstW, dstH);
       picQue.push(dstFrame);
-       
+
       av_frame_unref(avframe);
     }
 
@@ -585,10 +585,10 @@ int main(int argc, char** argv) {
     google::InitGoogleLogging(progName);
     /* set flags */
     // FLAGS_logtostderr = 1; // only stderr
-    FLAGS_log_dir = "./log";   // to file
+    FLAGS_log_dir = "./log";    // to file
     FLAGS_alsologtostderr = 1;  // file and stderr
     FLAGS_stderrthreshold = 0;  // INFO
-    FLAGS_minloglevel = 0;      // INFO/WARNNING/ERROR/FATAL
+    FLAGS_minloglevel = 1;      // INFO/WARNNING/ERROR/FATAL
   }
 
   /* setting up our usage environment */
@@ -705,7 +705,8 @@ int main(int argc, char** argv) {
   //       auto ts = tileStates[j][i];
   //       if (ts->videoTrackDesc == NULL) continue;
   //       env->taskScheduler().scheduleDelayedTask((k * 12) * 1e6,
-  //                                                (TaskFunc*)funcShutdown, ts);
+  //                                                (TaskFunc*)funcShutdown,
+  //                                                ts);
   //       env->taskScheduler().scheduleDelayedTask((6 + k * 12) * 1e6,
   //                                                (TaskFunc*)funcSetup, ts);
   //     }

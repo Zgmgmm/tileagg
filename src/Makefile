@@ -9,7 +9,8 @@ libBasicUsageEnvironment_LIB_SUFFIX = $(LIB_SUFFIX)
 libUsageEnvironment_LIB_SUFFIX = $(LIB_SUFFIX)
 libgroupsock_LIB_SUFFIX = $(LIB_SUFFIX)
 ##### Change the following for your environment:
-COMPILE_OPTS =	$(INCLUDES)  -I/usr/local/include -I.  -DSOCKLEN_T=socklen_t -g -D_LARGEFILE_SOURCE=1 -D_FILE_OFFSET_BITS=64 -DDEBUG_RTP_TIMESTAMP=1 -DDEBUG_TIMESTAMPS=1
+COMPILE_OPTS =	$(INCLUDES)  -I/usr/local/include -I.  -DSOCKLEN_T=socklen_t -g -D_LARGEFILE_SOURCE=1 -D_FILE_OFFSET_BITS=64 -DDEBUG_RTP_TIMESTAMP=1 -DDEBUG_TIMESTAMPS=1\
+	# -DGL_RENDOR_SPHERE=1
 COMPILE_OPTS += $$(pkg-config --cflags sdl2 libavcodec libavutil libavformat libswscale libglog glfw3)	
 C =			c
 C_COMPILER =		cc

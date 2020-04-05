@@ -16,6 +16,9 @@ class Rect : public ToString {
     return x <= rect.x && y <= rect.y && x + w >= rect.x + rect.w &&
            y + h >= rect.y + rect.h;
   }
+  Boolean contains(const unsigned& _x, const unsigned& _y) {
+    return _x >= x && _y >= y && _x <= x + w && _y <= y + h;
+  }
   Boolean equals(const Rect& rect) {
     return (rect.x == x && rect.y == y && rect.w == w && rect.h == h);
   }
@@ -27,17 +30,18 @@ class Rect : public ToString {
   unsigned x, y, w, h;
 };
 
-
-
-// A function that outputs a string that identifies each stream (for debugging output).  Modify this if you wish:
-UsageEnvironment& operator<<(UsageEnvironment& env, const RTSPClient& rtspClient) {
+// A function that outputs a string that identifies each stream (for debugging
+// output).  Modify this if you wish:
+UsageEnvironment& operator<<(UsageEnvironment& env,
+                             const RTSPClient& rtspClient) {
   return env << "[URL:\"" << rtspClient.url() << "\"]: ";
 }
 
-// A function that outputs a string that identifies each subsession (for debugging output).  Modify this if you wish:
-UsageEnvironment& operator<<(UsageEnvironment& env, const MediaSubsession& subsession) {
+// A function that outputs a string that identifies each subsession (for
+// debugging output).  Modify this if you wish:
+UsageEnvironment& operator<<(UsageEnvironment& env,
+                             const MediaSubsession& subsession) {
   return env << subsession.mediumName() << "/" << subsession.codecName();
 }
 
 #endif
- 

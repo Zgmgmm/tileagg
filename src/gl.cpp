@@ -2,6 +2,7 @@
 #include <iostream>
 #include <thread>
 
+#include "glog/logging.h"
 #include "glad/glad.h"  // glad必须在GLFW/GL之前include
 #include "GL/gl.h"
 #include "GLFW/glfw3.h"
@@ -28,8 +29,11 @@ extern "C" {
 
 using namespace std;
 
+const float PI = acos(-1);
+
 void startRendor();
 int rendorThreadFunc();
+void getFoV(int w, int h, int& x, int& y, int& left, int& right, int& top, int& bottom);
 
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
@@ -112,7 +116,7 @@ int rendorThreadFunc() {
   // -----------------------------
   glEnable(GL_DEPTH_TEST);
 
-  // build and compile our shader zprogram
+  // build and compile our shader program
   // ------------------------------------
   Shader ourShader("vertex_shader.glsl", "fragment_shader.glsl");
 
@@ -236,8 +240,24 @@ int rendorThreadFunc() {
     glBindTexture(GL_TEXTURE_2D, texture1);
     if (!picQue.empty()) {  // update texture
       auto frame = picQue.pop();
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, frame->width, frame->height, 0,
-                   GL_RGB, GL_UNSIGNED_BYTE, frame->data[0]);
+      auto data = frame->data[0];
+      auto w = frame->width;
+      auto h = frame->height;
+      // modify frame
+      int x, y, left, right, top, bottom;
+      getFoV(w, h, x, y, left, right, top, bottom);
+      for (int x = left; x != right;
+           x = (x + 1) % w) {  // works even if left>right
+        for (int y = top; y != bottom; y = (y + 1) % h) {
+          int idx = y * frame->linesize[0] + x * 3;
+          for (int i = idx; i < idx + 3; i++) {
+            data[i] += std::min(255 - data[i], 32);
+          }
+        }
+      }
+
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE,
+                   data);
       delete[] frame->data[0];
       av_frame_free(&frame);
     }
@@ -352,7 +372,43 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
   lastX = xpos;
   lastY = ypos;
 
-  if (leftMouseDown) camera.ProcessMouseMovement(xoffset, yoffset);
+  if (leftMouseDown) {
+    camera.ProcessMouseMovement(xoffset, yoffset);
+
+    const auto& front = camera.Front; 
+
+    // input: WxH, pitch, yaw, fov
+    // output: x, y, left, right, top, bottom(center and bound)
+
+    float h, w;
+    int x, y, left, right, top, bottom;
+
+    w = 1280, h = 720;
+
+    getFoV(w, h, x, y, left, right, top, bottom);
+
+    // camera.getFoV(1.0f, x, y, left, right, top, bottom);
+    // x = x * w + 0.5f, y = y * h + 0.5f, left = left * w + 0.5f,
+    // right = right * w + 0.5f, top = top * h + 0.5f, bottom = bottom * h + 0.5f;
+
+    char buf[512];
+    sprintf(buf,
+            // "x=%.f y=%.f l=%.f r=%.f t=%.f b=%.f "
+            "x=%d y=%d l=%d r=%d t=%d b=%d "
+            "Yaw=%.3f "
+            "Pitch=%.3f front(%.3f, "
+            "%.3f, %.3f)",
+            x, y, left, right, top, bottom, camera.Yaw, camera.Pitch, front.x,
+            front.y, front.z);
+    LOG(INFO) << buf << endl;
+  }
+}
+
+void getFoV(int w, int h, int& x, int& y, int& left, int& right, int& top, int& bottom) {
+  float tx, ty, l, r, t, b;
+  camera.getFoV(1.0f, tx, ty, l, r, t, b);
+  x = tx * w + 0.5f, y = ty * h + 0.5f, left = l * w + 0.5f,
+  right = r * w + 0.5f, top = t * h + 0.5f, bottom = b * h + 0.5f; 
 }
 
 void mouse_button_callback(GLFWwindow* window, int button, int action,

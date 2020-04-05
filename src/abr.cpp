@@ -219,8 +219,13 @@ void continueAfterSETUP(RTSPClient* rtspClient, int resultCode,
     double start;
     if (ta->fLastPlayTime == PLAY_TIME_UNAVAILABLE)
       start = 0;  // 16.9;
-    else
+    else {
       start = ta->fLastPlayTime / 90000;
+      int t = start / 0.4 + 0.8;
+      if (t * 0.4 < start) t++;
+      start = t * 0.4 - 0.1;
+    }
+    scs.start = start;
     rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, start, -1);
   }
 }
@@ -262,7 +267,8 @@ void continueAfterPLAY(RTSPClient* rtspClient, int resultCode,
 
     success = True;
 
-    ta->addTile(scs.subsession);
+
+    ta->addTile(scs.subsession, scs.start);
     ta->startPlaying();
     scs.subsession->miscPtr = rtspClient;
   } while (0);
@@ -453,30 +459,98 @@ void funcShutdown(void* clientData) {
   ourRTSPClient* client = (ourRTSPClient*)ts->rtspClient;
 
   if (client == NULL) {
-    LOG(ERROR) << "tile has no track" << endl;
+    LOG(INFO) << "tile has no track" << endl;
     return;
   }
 
-  auto& scs = client->scs;
+  LOG(WARNING) << "shutdown " << ts->videoTrackDesc->toString() << " "
+               << rtspClientCount << endl;
 
+  ts->rtspClient = NULL;
+
+  auto& scs = client->scs;
   ta->removeTile(scs.subsession);
   shutdownStream(client);
 };
 
 void funcSetup(void* clientData) {
   auto ts = (TileState*)clientData;
+  ourRTSPClient* client = (ourRTSPClient*)ts->rtspClient;
   if (ts->videoTrackDesc == NULL) {
     LOG(ERROR) << "tile has no track" << endl;
+    return;
+  }
+  if (client != NULL) {
+    LOG(INFO) << "tile has client!" << endl;
     return;
   }
 
   char url[512];
   strcpy(url, videoDesc->baseUrl);
   strcat(url, ts->videoTrackDesc->url);
+
+  LOG(WARNING) << "setup " << url << " " << rtspClientCount << endl;
+
   ts->rtspClient = openURL(url);
   // if (strcmp(url, "rtsp://localhost:8888/vr_1500000_3x3_0x0x384x256.mkv"))
   //   env->taskScheduler().scheduleDelayedTask(
   //       2 * 4 * 1e6, (TaskFunc*)funcShutdown, ts->rtspClient);
+};
+
+static long abrDuration = 0.5 * 1e6;
+
+void abr(void* clientData) {
+  int w, h, x, y, left, right, top, bottom;
+  void getFoV(int w, int h, int& x, int& y, int& left, int& right, int& top,
+              int& bottom);
+  w = 1280, h = 720;
+  getFoV(w, h, x, y, left, right, top, bottom);
+
+  vector<TileState*> roi;
+  for (unsigned i = 0; i < numRows; ++i) {
+    for (unsigned j = 0; j < numCols; ++j) {
+      auto ts = tileStates[i][j];
+      auto& region = ts->region;
+      if (region.contains(x, y)) {
+        roi.push_back(ts);
+        roi.push_back(tileStates[i][(j + 1) % numCols]);
+        roi.push_back(tileStates[i][(j - 1 + numCols) % numCols]);
+      } else {
+        //
+      }
+    }
+  }
+
+  for (unsigned i = 0; i < numRows; ++i) {
+    for (unsigned j = 0; j < numCols; ++j) {
+      if (i == 0 && j == 0) continue;
+      auto& ts = tileStates[i][j];
+      auto inRoi = False;
+      for (auto& t : roi) {
+        if (t == ts) {
+          inRoi = True;
+          break;
+        }
+      }
+      if (inRoi) {
+        if (ts->rtspClient == NULL) funcSetup(ts);
+      } else {
+        if (ts->rtspClient != NULL)
+          env->taskScheduler().scheduleDelayedTask(0 * 1e6,
+                                                   (TaskFunc*)funcShutdown, ts);
+      }
+    }
+  }
+
+  char log[1024];
+  sprintf(log, "x=%d y=%d left=%d right=%d top=%d bottom=%d", x, y, left, right,
+          top, bottom);
+  for (auto ts : roi) {
+    sprintf(log + strlen(log), " %s", ts->toString().c_str());
+  }
+  LOG(INFO) << log << endl;
+
+  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 };
 
 BlockingQueue<Frame*> frameQue;
@@ -576,6 +650,13 @@ void decoderThreadFunc() {
 int main(int argc, char** argv) {
   progName = argv[0];
 
+  // We need at least one argument:
+  if (argc < 2) {
+    LOG(FATAL) << "Usage: " << progName << " <rtsp-url-1> ... <rtsp-url-N>\n"
+               << "\t(where each <rtsp-url-i> is a \"rtsp://\" URL)\n";
+    return 1;
+  }
+
   // setting up singal handler
   signal(SIGHUP, signalHandlerShutdown);
   signal(SIGUSR1, signalHandlerShutdown);
@@ -588,19 +669,12 @@ int main(int argc, char** argv) {
     FLAGS_log_dir = "./log";    // to file
     FLAGS_alsologtostderr = 1;  // file and stderr
     FLAGS_stderrthreshold = 0;  // INFO
-    FLAGS_minloglevel = 1;      // INFO/WARNNING/ERROR/FATAL
+    FLAGS_minloglevel = 0;      // INFO/WARNNING/ERROR/FATAL
   }
 
   /* setting up our usage environment */
   scheduler = BasicTaskScheduler::createNew();
   env = OurUsageEnvironment::createNew(*scheduler);
-
-  // We need at least one argument:
-  if (argc < 2) {
-    LOG(FATAL) << "Usage: " << progName << " <rtsp-url-1> ... <rtsp-url-N>\n"
-               << "\t(where each <rtsp-url-i> is a \"rtsp://\" URL)\n";
-    return 1;
-  }
 
   // get a VideoDesc from json
   videoDesc = getVideoDesc(argv[1]);
@@ -687,6 +761,16 @@ int main(int argc, char** argv) {
   thread decoderThread(decoderThreadFunc);
 
   // setting up playing
+  for (auto trackDesc : videoDesc->tracks) {
+    if (trackDesc->region.w == 1280) {
+      auto ts = new TileState();
+      ts->region = trackDesc->region;
+      ts->videoTrackDesc = trackDesc;
+      env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
+      break;
+    }
+  }
+
   for (unsigned i = 0; i < numRows; ++i) {
     for (unsigned j = 0; j < numCols; ++j) {
       auto ts = tileStates[i][j];
@@ -712,6 +796,9 @@ int main(int argc, char** argv) {
   //     }
   //   }
   // }
+
+  // FoV adaptive bitrate
+  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 
   eventLoopWatchVariable = 0;
   // All subsequent activity takes place within the event loop:

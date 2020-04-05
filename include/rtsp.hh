@@ -16,6 +16,7 @@ class StreamClientState {
   MediaSubsession* subsession;
   TaskToken streamTimerTask;
   double duration;
+  double start;
 };
 
 // If you're streaming just a single stream (i.e., just from a single URL,

@@ -28,7 +28,8 @@ class Frame {
 
 class TileBuffer {
  public:
-  TileBuffer(TileAgg* agg, MediaSubsession* subsession = NULL);
+  TileBuffer(TileAgg* agg, MediaSubsession* subsession = NULL,
+             double start = 0.0f);
 
   void queueFrame(u_int8_t* data, unsigned size, u_int64_t rtpTimestamp,
                   u_int32_t rtpSeq, Boolean rtpMarker);
@@ -49,6 +50,7 @@ class TileBuffer {
   u_int32_t fNumAvailableFrames;
 
   u_int32_t fLastRtpTimestamp;
+  double fStart;
 };
 
 class TileAgg : public FramedSource {
@@ -59,7 +61,7 @@ class TileAgg : public FramedSource {
   virtual void doGetNextFrame();
 
  public:
-  void addTile(MediaSubsession* subsession);
+  void addTile(MediaSubsession* subsession, double start = 0.0f);
   void removeTile(MediaSubsession* subsession);
   typedef void onNextFrameFunc(Frame* frame);
   void setOnNextFrameCB(onNextFrameFunc* cb) { onNextFrameCB = cb; }

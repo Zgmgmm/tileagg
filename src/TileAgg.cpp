@@ -94,8 +94,11 @@ int64_t TileBuffer::curPlayTime() {
   // return fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
 }
 
-TileBuffer::TileBuffer(TileAgg* agg, MediaSubsession* subsession)
-    : ourAgg(agg), ourSubsession(subsession), fNumAvailableFrames(0) {
+TileBuffer::TileBuffer(TileAgg* agg, MediaSubsession* subsession, double start)
+    : ourAgg(agg),
+      ourSubsession(subsession),
+      fNumAvailableFrames(0),
+      fStart(start) {
   fLastRtpTimestamp = PLAY_TIME_UNAVAILABLE;
 }
 
@@ -139,18 +142,13 @@ void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
     if (fLastRtpTimestamp != PLAY_TIME_UNAVAILABLE &&
         !timeEQ(rtpTimestamp, fLastRtpTimestamp))
       fNumAvailableFrames = fFrames.size();
+  } else {  // 应在PLAY response之后才queueFrame
+    LOG(ERROR) << "rtpInfo.timestamp is 0!!" << endl;
   }
 
   // 帧入队
   auto frame = new Frame(data, size, rtpTimestamp, rtpMarker, rtpSeq);
   fFrames.push_back(frame);
-
-  // 检查rtpTimestamp倒退
-  if (timeLT(rtpTimestamp, fLastRtpTimestamp)) {
-    LOG(INFO) << "[TileState]"
-              << " rtpTimestamp decrease! " << (int)rtpTimestamp << "<"
-              << (int)fLastRtpTimestamp;
-  }
 
   // 记录上一个rtpTimestamp
   fLastRtpTimestamp = rtpTimestamp;
@@ -211,8 +209,8 @@ TileAgg::TileAgg(UsageEnvironment& env) : FramedSource(env) {
 
 TileAgg::~TileAgg() {}
 
-void TileAgg::addTile(MediaSubsession* subsession) {
-  auto tb = new TileBuffer(this, subsession);
+void TileAgg::addTile(MediaSubsession* subsession, double start) {
+  auto tb = new TileBuffer(this, subsession, start);
   do {                        // parse VPS SPS PPS
     if (fVPS != NULL) break;  // init once
     u_int8_t** ps[] = {&fVPS, &fSPS, &fPPS};

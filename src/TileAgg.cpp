@@ -51,16 +51,30 @@ void play();
 
 static char START_CODE[] = {0, 0, 0, 1};
 
-Boolean timeEQ(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
-  return ((unsigned)std::abs(int(a - b)) < tollerance);
+// Boolean timeEQ(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+//   return ((unsigned)std::abs(int(a - b)) < tollerance);
+// }
+
+// Boolean timeLT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+//   if (timeEQ(a, b, tollerance)) return False;
+//   return a < b;
+// }
+
+// Boolean timeGT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+//   if (timeEQ(a, b, tollerance)) return False;
+//   return a > b;
+// }
+
+Boolean timeEQ(double a, double b, double tollerance = 0.01) {
+  return (std::abs(a - b) < tollerance);
 }
 
-Boolean timeLT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+Boolean timeLT(double a, double b, double tollerance = 0.01) {
   if (timeEQ(a, b, tollerance)) return False;
   return a < b;
 }
 
-Boolean timeGT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
+Boolean timeGT(double a, double b, double tollerance = 0.01) {
   if (timeEQ(a, b, tollerance)) return False;
   return a > b;
 }
@@ -68,11 +82,12 @@ Boolean timeGT(u_int64_t a, u_int64_t b, u_int64_t tollerance = 2) {
 BlockingQueue<Frame*> que;
 
 Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
-             Boolean rtpMarker, u_int32_t rtpSeqNum)
+             Boolean rtpMarker, u_int32_t rtpSeqNum, double npt)
     : fSize(size),
       fRtpTimestamp(rtpTimestamp),
       fRtpMarker(rtpMarker),
-      fRtpSeqNumber(rtpSeqNum) {
+      fRtpSeqNumber(rtpSeqNum),
+      fNpt(npt) {
   fData = new u_int8_t[fSize];
   memmove(fData, data, size);
 }
@@ -80,9 +95,11 @@ Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
 Frame::~Frame() { delete[] fData; }
 
 // npt*frequency
-int64_t TileBuffer::curPlayTime() {
+double TileBuffer::curPlayTime() {
   // no available frames
   if (fNumAvailableFrames == 0) return PLAY_TIME_UNAVAILABLE;
+
+  return fFrames.front()->fNpt;
 
   int64_t timestampOffset =
       fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
@@ -98,13 +115,11 @@ TileBuffer::TileBuffer(TileAgg* agg, MediaSubsession* subsession, double start)
     : ourAgg(agg),
       ourSubsession(subsession),
       fNumAvailableFrames(0),
-      fStart(start) {
-  fLastRtpTimestamp = PLAY_TIME_UNAVAILABLE;
-}
+       fLastNpt(PLAY_TIME_UNAVAILABLE) {}
 
 void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
                             u_int64_t rtpTimestamp, u_int32_t rtpSeq,
-                            Boolean rtpMarker) {
+                            Boolean rtpMarker, double npt) {
   auto naluType = (data[0] & 0x7E) >> 1;
   if (naluType >= 32) {
     return;
@@ -139,19 +154,18 @@ void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
 
   // 检查rtpTimestamp是否增加，更新可用帧数
   if (ourSubsession->rtpInfo.timestamp != 0) {
-    if (fLastRtpTimestamp != PLAY_TIME_UNAVAILABLE &&
-        !timeEQ(rtpTimestamp, fLastRtpTimestamp))
+    if (fLastNpt != PLAY_TIME_UNAVAILABLE && !timeEQ(npt, fLastNpt))
       fNumAvailableFrames = fFrames.size();
   } else {  // 应在PLAY response之后才queueFrame
     LOG(ERROR) << "rtpInfo.timestamp is 0!!" << endl;
   }
 
   // 帧入队
-  auto frame = new Frame(data, size, rtpTimestamp, rtpMarker, rtpSeq);
+  auto frame = new Frame(data, size, rtpTimestamp, rtpMarker, rtpSeq, npt);
   fFrames.push_back(frame);
 
   // 记录上一个rtpTimestamp
-  fLastRtpTimestamp = rtpTimestamp;
+  fLastNpt = npt;
 }
 
 Frame* TileBuffer::dequeueFrame() {
@@ -283,6 +297,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
       ts->ourSubsession->rtpSource()->curPacketRTPTimestamp();
   Boolean curPacketMarkerBit =
       ts->ourSubsession->rtpSource()->curPacketMarkerBit();
+  double npt = ts->ourSubsession->getNormalPlayTime(presentationTime);
 
   // DEBUG: buffer overflow
   if (numTruncatedBytes > 0) {
@@ -331,15 +346,14 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
       log,
       "%s npt=%5.3f naluType=%-2u size=%-5u rSeq=%-5u rTS=%-7u mark=%d seq=%-7u"
       " TS=%-12u PTS=%12ld.%06ld\n",
-      ts->ourSubsession->parentSession().sessionDescription(),
-      ts->ourSubsession->getNormalPlayTime(presentationTime), naluType,
+      ts->ourSubsession->parentSession().sessionDescription(), npt, naluType,
       frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
       curPacketRTPTimestamp - rtpInfoTS, curPacketMarkerBit, curPacketRTPSeqNum,
       curPacketRTPTimestamp, presentationTime.tv_sec, presentationTime.tv_usec);
   LOG(INFO) << log;
 
   ts->queueFrame(buffer, frameSize, curPacketRTPTimestamp, curPacketRTPSeqNum,
-                 curPacketMarkerBit);
+                 curPacketMarkerBit, npt);
 
   while (1) {
     Frame* frame = ta->aggregate();
@@ -519,8 +533,8 @@ void play() {
 Frame* TileAgg::aggregate() {
   LOG(INFO) << "=========aggreating=========\n";
 
-  int64_t playTime;
-  int64_t earliestPlayTime = PLAY_TIME_UNAVAILABLE;
+  double playTime;
+  double earliestPlayTime = PLAY_TIME_UNAVAILABLE;
   Frame* frame;
   std::vector<Frame*> candidates;
   u_int8_t buf[1024000];
@@ -562,7 +576,7 @@ Frame* TileAgg::aggregate() {
   // 取出earliestPlayTime的所有tile
   for (auto ts : fTiles) {
     while ((playTime = ts->curPlayTime()) != PLAY_TIME_UNAVAILABLE) {
-      if (!timeEQ(playTime, earliestPlayTime, 10)) {
+      if (!timeEQ(playTime, earliestPlayTime)) {
         break;
       }
 

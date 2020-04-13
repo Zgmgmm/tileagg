@@ -1,4 +1,5 @@
 #include <signal.h>
+#include <time.h>
 
 #include <fstream>
 #include <thread>
@@ -9,6 +10,7 @@
 #include "TileAgg.hh"
 #include "ToString.hh"
 #include "config.hh"
+#include "glm/glm.hpp"
 #include "glog/logging.h"
 #include "json/json.h"
 #include "liveMedia.hh"
@@ -218,12 +220,13 @@ void continueAfterSETUP(RTSPClient* rtspClient, int resultCode,
     scs.duration = scs.session->playEndTime() - scs.session->playStartTime();
     double start;
     if (ta->fLastPlayTime == PLAY_TIME_UNAVAILABLE)
-      start = 0;  // 16.9;
+      start = 0;
     else {
-      start = ta->fLastPlayTime / 90000;
-      int t = start / 0.4 + 0.8;
+      // start = (ta->fLastPlayTime + 1.2) / 90000;
+      start = ta->fLastPlayTime + 0.4;
+      int t = start / 0.4;
       if (t * 0.4 < start) t++;
-      start = t * 0.4 - 0.1;
+      start = t * 0.4;
     }
     scs.start = start;
     rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, start, -1);
@@ -267,7 +270,6 @@ void continueAfterPLAY(RTSPClient* rtspClient, int resultCode,
 
     success = True;
 
-
     ta->addTile(scs.subsession, scs.start);
     ta->startPlaying();
     scs.subsession->miscPtr = rtspClient;
@@ -276,7 +278,7 @@ void continueAfterPLAY(RTSPClient* rtspClient, int resultCode,
 
   if (!success) {
     // An unrecoverable error occurred with this stream.
-    // shutdownStream(rtspClient);
+    shutdownStream(rtspClient);
   } else {
     // static Boolean d = True;
     // if (!d) return;
@@ -452,6 +454,9 @@ class TileState : public ToString {
   RTSPClient* rtspClient;
   VideoTrackDesc* videoTrackDesc;
   Rect region;
+  bool visible;
+  clock_t lastTimeVisible;
+  bool predictedVisible;
 };
 
 void funcShutdown(void* clientData) {
@@ -463,8 +468,8 @@ void funcShutdown(void* clientData) {
     return;
   }
 
-  LOG(WARNING) << "shutdown " << ts->videoTrackDesc->toString() << " "
-               << rtspClientCount << endl;
+  LOG(INFO) << "shutdown " << ts->videoTrackDesc->toString() << " "
+            << rtspClientCount << endl;
 
   ts->rtspClient = NULL;
 
@@ -489,7 +494,7 @@ void funcSetup(void* clientData) {
   strcpy(url, videoDesc->baseUrl);
   strcat(url, ts->videoTrackDesc->url);
 
-  LOG(WARNING) << "setup " << url << " " << rtspClientCount << endl;
+  LOG(INFO) << "setup " << url << " " << rtspClientCount << endl;
 
   ts->rtspClient = openURL(url);
   // if (strcmp(url, "rtsp://localhost:8888/vr_1500000_3x3_0x0x384x256.mkv"))
@@ -500,55 +505,84 @@ void funcSetup(void* clientData) {
 static long abrDuration = 0.5 * 1e6;
 
 void abr(void* clientData) {
-  int w, h, x, y, left, right, top, bottom;
-  void getFoV(int w, int h, int& x, int& y, int& left, int& right, int& top,
-              int& bottom);
-  w = 1280, h = 720;
-  getFoV(w, h, x, y, left, right, top, bottom);
+  extern vector<glm::vec2> visibleVertices;
+  extern vector<glm::vec2> predictedVisibleVertices;
+  int w = 1280, h = 720;
 
-  vector<TileState*> roi;
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
-      auto ts = tileStates[i][j];
-      auto& region = ts->region;
-      if (region.contains(x, y)) {
-        roi.push_back(ts);
-        roi.push_back(tileStates[i][(j + 1) % numCols]);
-        roi.push_back(tileStates[i][(j - 1 + numCols) % numCols]);
-      } else {
-        //
-      }
-    }
-  }
-
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
-      if (i == 0 && j == 0) continue;
-      auto& ts = tileStates[i][j];
-      auto inRoi = False;
-      for (auto& t : roi) {
-        if (t == ts) {
-          inRoi = True;
-          break;
+  auto findTile = [tileStates, numRows, numCols](int x, int y) {
+    for (unsigned i = 0; i < numRows; ++i) {
+      for (unsigned j = 0; j < numCols; ++j) {
+        auto ts = tileStates[i][j];
+        if (ts->region.contains(x, y)) {
+          return ts;
         }
       }
-      if (inRoi) {
-        if (ts->rtspClient == NULL) funcSetup(ts);
-      } else {
-        if (ts->rtspClient != NULL)
+    }
+  };
+
+  // init visible and predict state of tiles
+  for (unsigned i = 0; i < numRows; ++i)
+    for (unsigned j = 0; j < numCols; ++j) {
+      tileStates[i][j]->visible = false;
+      tileStates[i][j]->predictedVisible = false;
+    }
+
+  // visible
+  // for (auto& v : visibleVertices) {
+  //   int x = w * v.s, y = h * v.t;
+  //   auto ts = findTile(x, y);
+  //   if (ts == NULL) {
+  //     LOG(ERROR) << "counld find a tile!" << endl;
+  //     continue;
+  //   }
+  //   ts->visible = true;
+  //   ts->lastTimeVisible = clock();
+  // }
+  // // predict
+  for (auto& v : predictedVisibleVertices) {
+    int x = w * v.s, y = h * v.t;
+    auto ts = findTile(x, y);
+    if (ts == NULL) {
+      LOG(ERROR) << "counld find a tile!" << endl;
+      continue;
+    }
+    ts->predictedVisible = true;
+  }
+
+  for (unsigned i = 0; i < numRows; ++i) {
+    for (unsigned j = 0; j < numCols; ++j) {
+      // if (i == 0 && j == 0) continue;
+      auto& ts = tileStates[i][j];
+      if (ts->visible) {
+        if (ts->rtspClient == NULL) {
+          LOG(WARNING) << "tile visible but not active" << *ts << endl;
           env->taskScheduler().scheduleDelayedTask(0 * 1e6,
-                                                   (TaskFunc*)funcShutdown, ts);
+                                                   (TaskFunc*)funcSetup, ts);
+        }
+      } else if (ts->predictedVisible) {
+        if (ts->rtspClient == NULL)
+          env->taskScheduler().scheduleDelayedTask(0 * 1e6,
+                                                   (TaskFunc*)funcSetup, ts);
+      } else {  // invisible now and in the future
+        if (ts->rtspClient != NULL) {
+          auto dt = clock() - ts->lastTimeVisible;
+          if ((float)dt / CLOCKS_PER_SEC > 0.5) {  // invisible for 0.5s
+            env->taskScheduler().scheduleDelayedTask(
+                0 * 1e6, (TaskFunc*)funcShutdown, ts);
+          }
+        }
       }
     }
   }
 
-  char log[1024];
-  sprintf(log, "x=%d y=%d left=%d right=%d top=%d bottom=%d", x, y, left, right,
-          top, bottom);
-  for (auto ts : roi) {
-    sprintf(log + strlen(log), " %s", ts->toString().c_str());
-  }
-  LOG(INFO) << log << endl;
+  // char log[1024];
+  // sprintf(log, "x=%d y=%d left=%d right=%d top=%d bottom=%d", x, y, left,
+  // right,
+  //         top, bottom);
+  // for (auto ts : roi) {
+  //   sprintf(log + strlen(log), " %s", ts->toString().c_str());
+  // }
+  // LOG(INFO) << log << endl;
 
   env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 };
@@ -667,8 +701,8 @@ int main(int argc, char** argv) {
     /* set flags */
     // FLAGS_logtostderr = 1; // only stderr
     FLAGS_log_dir = "./log";    // to file
-    FLAGS_alsologtostderr = 1;  // file and stderr
-    FLAGS_stderrthreshold = 0;  // INFO
+    FLAGS_alsologtostderr = 0;  // file and stderr
+    FLAGS_stderrthreshold = 1;  // INFO
     FLAGS_minloglevel = 0;      // INFO/WARNNING/ERROR/FATAL
   }
 
@@ -771,15 +805,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
-      auto ts = tileStates[i][j];
-      if (ts->videoTrackDesc == NULL) continue;
+  // for (unsigned i = 0; i < numRows; ++i) {
+  //   for (unsigned j = 0; j < numCols; ++j) {
+  //     auto ts = tileStates[i][j];
+  //     if (ts->videoTrackDesc == NULL) continue;
 
-      env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
-      // openURL(url);
-    }
-  }
+  //     env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
+  //     // openURL(url);
+  //   }
+  // }
 
   // // mocking setup/shutdown tiles
   // for (unsigned k = 1; k < 10; k++) {

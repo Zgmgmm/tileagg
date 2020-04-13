@@ -8,7 +8,7 @@
 #include "BasicUsageEnvironment.hh"
 #include "liveMedia.hh"
 
-#define PLAY_TIME_UNAVAILABLE -1u
+#define PLAY_TIME_UNAVAILABLE -1
 
 class TileAgg;
 class TileBuffer;
@@ -16,7 +16,7 @@ class TileBuffer;
 class Frame {
  public:
   Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp = -1,
-        Boolean rtpMarker = False, u_int32_t rtpSeqNum = -1);
+        Boolean rtpMarker = False, u_int32_t rtpSeqNum = -1, double npt = -1.0);
 
   ~Frame();
   u_int32_t fSize;
@@ -24,6 +24,7 @@ class Frame {
   u_int64_t fRtpTimestamp;
   Boolean fRtpMarker;
   u_int32_t fRtpSeqNumber;
+  double fNpt;
 };
 
 class TileBuffer {
@@ -32,12 +33,12 @@ class TileBuffer {
              double start = 0.0f);
 
   void queueFrame(u_int8_t* data, unsigned size, u_int64_t rtpTimestamp,
-                  u_int32_t rtpSeq, Boolean rtpMarker);
+                  u_int32_t rtpSeq, Boolean rtpMarker, double npt);
 
   Frame* dequeueFrame();
   // return earliest play time in ticks (npt*frequency) or -1 when no frame
   // available
-  int64_t curPlayTime();
+  double curPlayTime();
 
   // TODO:
   // reassign MediaSubsession
@@ -49,9 +50,9 @@ class TileBuffer {
   std::deque<Frame*> fFrames;
   u_int32_t fNumAvailableFrames;
 
-  u_int32_t fLastRtpTimestamp;
-  double fStart;
-};
+  
+  double fLastNpt;
+ };
 
 class TileAgg : public FramedSource {
  public:
@@ -84,7 +85,7 @@ class TileAgg : public FramedSource {
   onNextFrameFunc* onNextFrameCB;
   std::list<TileBuffer*> fTiles;
   u_int8_t fNumTiles;
-  int64_t fLastPlayTime;
+  double fLastPlayTime;
 
 #define MAX_TILE_BUF_SIZE (1 << 20)  // 1MB
   u_int8_t fBuffer[MAX_TILE_BUF_SIZE];

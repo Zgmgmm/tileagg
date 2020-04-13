@@ -16,7 +16,7 @@ enum Camera_Movement {
 };
 
 // Default camera values
-const float YAW         = -90.0f;
+const float YAW         =  180.0f;
 const float PITCH       =  0.0f;
 const float SPEED       =  2.5f;
 const float SENSITIVITY =  0.1f;
@@ -117,27 +117,6 @@ public:
             Zoom = 1.0f;
         if (Zoom >= max)
             Zoom = max;
-    }
-
-    // x, y, left, right, top, bottom, [0,1]
-    void getFoV(float aspect, float& x, float& y, float& l, float& r, float& t, float& b) {
-      auto getXY = [](const float& yaw, const float& pitch, float& x, float& y) {
-        const float PI = acos(-1);
-        float stackAngle = glm::radians(pitch);
-        float sectorAngle = glm::radians(yaw);
-        while (sectorAngle > PI * 2) sectorAngle -= PI * 2;
-        while (sectorAngle < 0) sectorAngle += PI * 2;
-        while (stackAngle > PI / 2) stackAngle -= PI;
-        while (stackAngle < -PI / 2) stackAngle += PI;
-        x = sectorAngle / (PI * 2);
-        y = 0.5f - stackAngle / PI;
-      };
-
-      float fov;
-      fov = Zoom*2/3;
-      getXY(Yaw, Pitch, x, y);
-      getXY(Yaw - fov, Pitch + fov * aspect, l, t);
-      getXY(Yaw + fov, Pitch - fov * aspect, r, b);
     }
 
 private:

@@ -1,0 +1,14 @@
+Bug
+- ~~Seek请求时间对不上(服务器问题?)~~
+
+
+功能
+- 内容生成脚本
+    - ~~MKV~~
+    - JSON
+- 细节功能完善,去除hardcode
+- 实验测试脚本
+
+优化
+- nop tile生成
+- FoV和Predict区域用Shader绘制

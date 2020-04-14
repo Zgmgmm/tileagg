@@ -51,19 +51,52 @@ public:
         updateCameraVectors();
     }
     // Constructor with scalar values
-    Camera(float posX, float posY, float posZ, float upX, float upY, float upZ, float yaw, float pitch) : Front(glm::vec3(0.0f, 0.0f, -1.0f)), MovementSpeed(SPEED), MouseSensitivity(SENSITIVITY), Zoom(ZOOM)
-    {
-        Position = glm::vec3(posX, posY, posZ);
-        WorldUp = glm::vec3(upX, upY, upZ);
-        Yaw = yaw;
-        Pitch = pitch;
-        updateCameraVectors();
+    Camera(float posX, float posY, float posZ, float upX, float upY, float upZ,
+           float yaw, float pitch)
+        : Front(glm::vec3(0.0f, 0.0f, -1.0f)),
+          MovementSpeed(SPEED),
+          MouseSensitivity(SENSITIVITY),
+          Zoom(ZOOM) {
+      Position = glm::vec3(posX, posY, posZ);
+      WorldUp = glm::vec3(upX, upY, upZ);
+      Yaw = yaw;
+      Pitch = pitch;
+      updateCameraVectors();
     }
 
-    // Returns the view matrix calculated using Euler Angles and the LookAt Matrix
-    glm::mat4 GetViewMatrix()
-    {
-        return glm::lookAt(Position, Position + Front, Up);
+    void setYaw(float yaw) {
+    //   while (yaw > 360.0f) yaw -= 360.0f;
+    //   while (yaw < 0.0f) yaw += 360.0f;
+      Yaw = yaw;
+    }
+
+    float getYaw() {
+      auto yaw = Yaw;
+      while (yaw > 360.0f) yaw -= 360.0f;
+      while (yaw < 0.0f) yaw += 360.0f;
+      return yaw;
+    }
+
+    void setPitch(float pitch, bool constrainPitch = true) {
+      if (constrainPitch) {
+        // while (pitch > 90.0f) pitch -= 180.0f;
+        // while (pitch < -90.0f) pitch += 180.0f;
+        // 若限制为90.0f会导致翻转
+        if (pitch > 89.999f) pitch = 89.999f;
+        if (pitch < -89.999f) pitch = -89.999f;
+      }
+      Pitch = pitch;
+    }
+
+    float getPitch() {
+      auto pitch = Pitch;
+      return pitch;
+    }
+
+    // Returns the view matrix calculated using Euler Angles and the LookAt
+    // Matrix
+    glm::mat4 GetViewMatrix() {
+      return glm::lookAt(Position, Position + Front, Up);
     }
 
     // Processes input received from any keyboard-like input system. Accepts input parameter in the form of camera defined ENUM (to abstract it from windowing systems)
@@ -86,22 +119,14 @@ public:
         xoffset *= MouseSensitivity;
         yoffset *= MouseSensitivity;
 
-        Yaw   += xoffset;
-        Pitch += yoffset;
+        float yaw,pitch;
+        yaw   = Yaw + xoffset;
+        pitch = Pitch + yoffset;
 
         // Make sure that when pitch is out of bounds, screen doesn't get flipped
-        if (constrainPitch)
-        {
-            if (Pitch > 89.9999f)
-                Pitch = 89.9999f;
-            if (Pitch < -89.9999f)
-                Pitch = -89.9999f;
-        }
-
-        while (Pitch > 90.0f) Pitch -= 180.0f;
-        while (Pitch < -90.0f) Pitch += 180.0f;
-        while (Yaw > 360.0f) Yaw -= 360.0f;
-        while (Yaw < 0.0f) Yaw += 360.0f;
+        setYaw(yaw);
+        setPitch(pitch, constrainPitch); 
+ 
 
         // Update Front, Right and Up Vectors using the updated Euler angles
         updateCameraVectors();
@@ -119,7 +144,7 @@ public:
             Zoom = max;
     }
 
-private:
+// private:
     // Calculates the front vector from the Camera's (updated) Euler Angles
     void updateCameraVectors()
     {

@@ -1,22 +1,21 @@
-
-
 #include "glad/glad.h"  // glad必须在GLFW/GL之前include
 #include "GL/gl.h"
+#include "GLFW/glfw3.h"
 
 #include <time.h>
+
 #include <iostream>
 #include <list>
 #include <mutex>
 #include <thread>
 
 #include "BlockingQueue.h"
-#include "GLFW/glfw3.h"
 #include "Sphere.h"
 #include "camera.h"
-#include "glog/logging.h"
 #include "glm/glm.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtc/type_ptr.hpp"
+#include "glog/logging.h"
 #include "shader_m.h"
 // #define STB_IMAGE_IMPLEMENTATION
 // #include "stb_image.h"
@@ -69,19 +68,23 @@ Camera camera(glm::vec3(0.0f, 0.0f, 0.0f));
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
+float zoomSpeed = 32.0f;
 
 // predict
-bool doPredict = true;
-float predictScale = 1.0f;  // 预测视角缩放
+bool displayPredict = true;
+float predictScale = 1.2f;  // 预测视角缩放
 float predictExtra = 24;    // 额外预测视角
 Camera predictCamera(glm::vec3(0.0f, 0.0f, 0.0f));
 vector<glm::vec2> visibleVertices;
 vector<glm::vec2> predictedVisibleVertices;
 
 // FoV
+bool frozeFoV = false;
 list<glm::vec3> focusTrack;
-int focusS, focusT;
-bool displayFov = true;
+int focusTexS, focusTexT;
+float focusS, focusT;
+bool displayFoV = true;
+float extraFoV = 0.0f;  // 扩展显示FoV
 
 // sphere
 const int numSectors = 144;
@@ -157,9 +160,7 @@ int genView(unsigned int& VBO, unsigned int& VAO, unsigned int& EBO,
 }
 
 void calculateFoV() {
-  if (texW == 0 || texH == 0) {
-    return;
-  }
+  if (frozeFoV) return;
 
   static std::mutex mtx;
   mtx.lock();
@@ -167,7 +168,7 @@ void calculateFoV() {
   // get focus and FoV
   // sphere
   const float* verticesSphere = sphere.getInterleavedVertices();
-  unsigned strideSphere = sphere.getInterleavedStride(); 
+  unsigned strideSphere = sphere.getInterleavedStride();
   {
     // get focus in texture
     float yaw, pitch;
@@ -175,16 +176,19 @@ void calculateFoV() {
     const float PI = acos(-1);
     float sectorAngle = glm::radians(yaw);
     float stackAngle = glm::radians(pitch);
-    focusS = (float)texW * sectorAngle / (PI * 2);
-    focusT = (float)texH * (0.5f - stackAngle / PI);
+    focusS = sectorAngle / (PI * 2);
+    focusT = 0.5f - stackAngle / PI;
 
     // predict focus s,t
     double predictedYaw, predictedPitch;
     unsigned int predictWindow = 16;  // FIXME: by config
     double predicteDuration = 500.0;  // FIXME: by config
-    double now = (double)clock() / 1000.0; 
+    double now = (double)clock() / 1000.0;
     focusTrack.push_back(glm::vec3(yaw, pitch, now));
-    if (focusTrack.size() > predictWindow) {      
+
+    predictedYaw = camera.getYaw();
+    predictedPitch = camera.getPitch();
+    if (focusTrack.size() > predictWindow) {
       focusTrack.pop_front();
       float yaw, pitch, clk;
       vector<float> lYaw, yPitch, lclk;
@@ -198,21 +202,22 @@ void calculateFoV() {
       predictedPitch =
           predict(lclk, yPitch, predictWindow, now + predicteDuration);
       VLOG(INFO) << "now " << now << " predict " << yaw << "," << pitch
-                   << " -> " << predictedYaw << "," << predictedPitch << endl;
-      predictCamera = camera;
-      predictCamera.Zoom = camera.Zoom * predictScale + predictExtra ;  // FIXME: by config
-      // auto diff = glm::vec2(focusTrack.back() - focusTrack.front());//hack case
-      // if(glm::length(diff)<5){
-      //   predictCamera.Zoom*=1.5f;
-      // }
-
-      predictCamera.setYaw(predictedYaw);
-      predictCamera.setPitch(predictedPitch);
-      // predictCamera.ProcessMouseMovement(predictedYaw - camera.Yaw,
-      //                                    predictedPitch - camera.Pitch);
-      predictCamera.updateCameraVectors();
+                 << " -> " << predictedYaw << "," << predictedPitch << endl;
     }
 
+    predictCamera = camera;
+    predictCamera.Zoom =
+        camera.Zoom * predictScale + predictExtra;  // FIXME: by config
+    // auto diff = glm::vec2(focusTrack.back() - focusTrack.front());//hack
+    // case if(glm::length(diff)<5){
+    //   predictCamera.Zoom*=1.5f;
+    // }
+
+    predictCamera.setYaw(predictedYaw);
+    predictCamera.setPitch(predictedPitch);
+    // predictCamera.ProcessMouseMovement(predictedYaw - camera.Yaw,
+    //                                    predictedPitch - camera.Pitch);
+    predictCamera.updateCameraVectors();
     // get FoV in texture
     {
       glm::mat4 projection(1.0), view(1.0), model(1.0), mvp(1.0);
@@ -425,14 +430,14 @@ int rendorThreadFunc() {
       auto data = frame->data[0];
       texW = frame->width;
       texH = frame->height;
+      focusTexS = focusS * texW;
+      focusTexT = focusT * texH;
 
- 
-      doPredict = displayFov = viewMode != 2;
       calculateFoV();
-      // get focus and FoV
 
+      displayPredict = displayFoV = viewMode != 2 || frozeFoV;
       // draw vertices in FoV
-      if (displayFov) {
+      if (displayFoV) {
         for (auto& pos : visibleVertices) {
           int s = pos.s * texW;
           int t = pos.t * texH;
@@ -445,8 +450,6 @@ int rendorThreadFunc() {
             for (int t = top; t != bottom; t = (t + 1) % texH) {
               // int idx = (y * texW + x) * 3;
               int idx = t * frame->linesize[0] + s * 3;
-              float d = std::sqrt((s - focusS) * (s - focusS) +
-                                  (t - focusT) * (t - focusT));
               glm::ivec3 color = glm::ivec3(0, 255, 0);
               for (int i = 0; i < 3; i++) {
                 data[idx + i] += std::min(255 - data[idx + i], color[i]);
@@ -456,7 +459,7 @@ int rendorThreadFunc() {
         }
       }
 
-      if (doPredict) {
+      if (displayPredict) {
         for (auto& pos : predictedVisibleVertices) {
           int s = pos.s * texW;
           int t = pos.t * texH;
@@ -469,8 +472,6 @@ int rendorThreadFunc() {
             for (int t = top; t != bottom; t = (t + 1) % texH) {
               // int idx = (y * texW + x) * 3;
               int idx = t * frame->linesize[0] + s * 3;
-              float d = std::sqrt((s - focusS) * (s - focusS) +
-                                  (t - focusT) * (t - focusT));
               glm::ivec3 color = glm::ivec3(255, 255, 255);
               for (int i = 0; i < 3; i++) {
                 data[idx + i] += std::min(255 - data[idx + i], color[i]);
@@ -479,16 +480,6 @@ int rendorThreadFunc() {
           }
         }
       }
-
-      // for (int x = left; x != right;
-      //      x = (x + 1) % w) {  // works even if left>right
-      //   for (int y = top; y != bottom; y = (y + 1) % h) {
-      //     int idx = y * frame->linesize[0] + x * 3;
-      //     for (int i = idx; i < idx + 3; i++) {
-      //       data[i] += std::min(255 - data[i], 32);
-      //     }
-      //   }
-      // }
 
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texW, texH, 0, GL_RGB,
                    GL_UNSIGNED_BYTE, frame->data[0]);
@@ -513,7 +504,7 @@ int rendorThreadFunc() {
       indexSize = indexSizeSphere;
       lineIndexSize = lineIndexSizeSphere;
       projection =
-          glm::perspective(glm::radians(camera.Zoom),
+          glm::perspective(glm::radians(camera.Zoom + extraFoV),
                            (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
       // camera/view transformation
       view = camera.GetViewMatrix();
@@ -578,14 +569,18 @@ void processInput(GLFWwindow* window) {
     camera.ProcessKeyboard(LEFT, deltaTime);
   if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
     camera.ProcessKeyboard(RIGHT, deltaTime);
-
+  if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS)
+    camera.ProcessMouseScroll(deltaTime * zoomSpeed);
+  if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS) {
+    camera.ProcessMouseScroll(-deltaTime * zoomSpeed);
+  }
   float xoffset, yoffset;
   float speed = 16;
   xoffset = yoffset = 0;
-  if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) yoffset   += speed;
+  if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) yoffset += speed;
   if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) yoffset -= speed;
   if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) xoffset -= speed;
-  if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) xoffset+= speed;
+  if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) xoffset += speed;
 
   camera.ProcessMouseMovement(xoffset, yoffset);
 }
@@ -641,12 +636,12 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
 
 void key_callback(GLFWwindow* window, int key, int scancode, int action,
                   int mods) {
-  // 接受键盘 M 键，更改视图
-  if (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS)
-    if (viewMode == 1)
-      viewMode = 2;
-    else
-      viewMode = 1;
+  // 接受键盘 V 键，更改视图
+  if (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS)
+    viewMode = (viewMode == 1) ? 2 : 1;
+  if (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS) frozeFoV = !frozeFoV;
+  if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+    camera.Position = glm::vec3(0.0f);
 }
 
 void updateTexture(u_int8_t* data, int width, int height) {}

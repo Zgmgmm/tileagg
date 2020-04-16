@@ -45,11 +45,35 @@ TaskScheduler* scheduler;
 UsageEnvironment* env;
 char eventLoopWatchVariable;
 VideoDesc* videoDesc;
-unsigned numRows, numCols;
 vector<unsigned> rowHeights, colWidths;
 TileState* tileStates[16][16];
 unsigned rtspClientCount;
 TileAgg* ta;
+
+class VideoTrackDesc : public ToString {
+ public:
+  string toString() {
+    char s[256];
+    sprintf(s, "VideoTrackDesc(%s)", url);
+    return string(s);
+  }
+
+  char* url;
+  unsigned bitrate;
+  Rect region;
+};
+
+class VideoDesc {
+ public:
+  double duration;
+  double rap;
+  unsigned gop;
+  unsigned numRows, numCols;
+  unsigned *rowHeights, *colWidths;
+  char* baseUrl;
+  char *spropVPS, *spropSPS, *spropPPS;
+  vector<VideoTrackDesc*> tracks;
+};
 
 /* function declarations */
 void signalHandlerShutdown(int sig);
@@ -218,7 +242,7 @@ void continueAfterSETUP(RTSPClient* rtspClient, int resultCode,
                                 scs.session->absEndTime());
   } else {
     scs.duration = scs.session->playEndTime() - scs.session->playStartTime();
-    double start;
+    double start, end;
     if (ta->fLastPlayTime == PLAY_TIME_UNAVAILABLE)
       start = 0;
     else {
@@ -228,8 +252,10 @@ void continueAfterSETUP(RTSPClient* rtspClient, int resultCode,
       if (t * 0.4 < start) t++;
       start = t * 0.4;
     }
+    end = videoDesc->duration;
     scs.start = start;
-    rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, start, -1);
+    scs.end = end;
+    rtspClient->sendPlayCommand(*scs.session, continueAfterPLAY, start, end);
   }
 }
 
@@ -318,14 +344,17 @@ void subsessionAfterPlaying(void* clientData) {
 void subsessionByeHandler(void* clientData, char const* reason) {
   MediaSubsession* subsession = (MediaSubsession*)clientData;
   RTSPClient* rtspClient = (RTSPClient*)subsession->miscPtr;
-  UsageEnvironment& env = rtspClient->envir();  // alias
 
-  env << *rtspClient << "Received RTCP \"BYE\"";
+  LOG(INFO) << "[URL:\"" << rtspClient->url() << "\"]: "
+            << "Received RTCP \"BYE\"";
   if (reason != NULL) {
-    env << " (reason:\"" << reason << "\")";
+    LOG(INFO) << " (reason:\"" << reason << "\")";
     delete[](char*) reason;
   }
-  env << " on \"" << *subsession << "\" subsession\n";
+  LOG(INFO) << " on \"" << subsession->mediumName() << "/"
+            << subsession->codecName() << "\" subsession\n";
+
+  exit(0);
 
   // Now act as if the subsession had closed:
   subsessionAfterPlaying(subsession);
@@ -383,29 +412,6 @@ void shutdownStream(RTSPClient* rtspClient, int exitCode) {
   }
 }
 
-class VideoTrackDesc : public ToString {
- public:
-  string toString() {
-    char s[256];
-    sprintf(s, "VideoTrackDesc(%s)", url);
-    return string(s);
-  }
-
-  char* url;
-  unsigned bitrate;
-  Rect region;
-};
-
-class VideoDesc {
- public:
-  double duration;
-  double rap;
-  unsigned gop;
-  char* baseUrl;
-  char *spropVPS, *spropSPS, *spropPPS;
-  vector<VideoTrackDesc*> tracks;
-};
-
 VideoDesc* getVideoDesc(const char* file) {
   Json::Value root;
   std::ifstream ifs;
@@ -426,6 +432,13 @@ VideoDesc* getVideoDesc(const char* file) {
   videoDesc->spropSPS = strDup(root["sprop-sps"].asCString());
   videoDesc->spropPPS = strDup(root["sprop-pps"].asCString());
   videoDesc->baseUrl = strDup(root["base-url"].asCString());
+
+  // FIXME: 从SPS解析
+  // parse tile rows and col from sprops
+  videoDesc->numRows = 3;
+  videoDesc->numCols = 3;
+  rowHeights = {256, 256, 208};
+  colWidths = {384, 448, 448};
 
   auto tracks = root["tracks"];
   for (auto track : tracks) {
@@ -504,41 +517,42 @@ void funcSetup(void* clientData) {
 
 static long abrDuration = 0.5 * 1e6;
 
+TileState* findTile(int x, int y) {
+  for (unsigned i = 0; i < videoDesc->numRows; ++i) {
+    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
+      auto ts = tileStates[i][j];
+      if (ts->region.contains(x, y)) {
+        return ts;
+      }
+    }
+  }
+  return NULL;
+};
+
 void abr(void* clientData) {
   extern vector<glm::vec2> visibleVertices;
   extern vector<glm::vec2> predictedVisibleVertices;
   int w = 1280, h = 720;
 
-  auto findTile = [tileStates, numRows, numCols](int x, int y) {
-    for (unsigned i = 0; i < numRows; ++i) {
-      for (unsigned j = 0; j < numCols; ++j) {
-        auto ts = tileStates[i][j];
-        if (ts->region.contains(x, y)) {
-          return ts;
-        }
-      }
-    }
-  };
-
   // init visible and predict state of tiles
-  for (unsigned i = 0; i < numRows; ++i)
-    for (unsigned j = 0; j < numCols; ++j) {
+  for (unsigned i = 0; i < videoDesc->numRows; ++i)
+    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
       tileStates[i][j]->visible = false;
       tileStates[i][j]->predictedVisible = false;
     }
 
   // visible
-  // for (auto& v : visibleVertices) {
-  //   int x = w * v.s, y = h * v.t;
-  //   auto ts = findTile(x, y);
-  //   if (ts == NULL) {
-  //     LOG(ERROR) << "counld find a tile!" << endl;
-  //     continue;
-  //   }
-  //   ts->visible = true;
-  //   ts->lastTimeVisible = clock();
-  // }
-  // // predict
+  for (auto& v : visibleVertices) {
+    int x = w * v.s, y = h * v.t;
+    auto ts = findTile(x, y);
+    if (ts == NULL) {
+      LOG(ERROR) << "counld find a tile!" << endl;
+      continue;
+    }
+    ts->visible = true;
+    ts->lastTimeVisible = clock();
+  }
+  // predict
   for (auto& v : predictedVisibleVertices) {
     int x = w * v.s, y = h * v.t;
     auto ts = findTile(x, y);
@@ -549,8 +563,8 @@ void abr(void* clientData) {
     ts->predictedVisible = true;
   }
 
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
+  for (unsigned i = 0; i < videoDesc->numRows; ++i) {
+    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
       // if (i == 0 && j == 0) continue;
       auto& ts = tileStates[i][j];
       if (ts->visible) {
@@ -575,15 +589,6 @@ void abr(void* clientData) {
     }
   }
 
-  // char log[1024];
-  // sprintf(log, "x=%d y=%d left=%d right=%d top=%d bottom=%d", x, y, left,
-  // right,
-  //         top, bottom);
-  // for (auto ts : roi) {
-  //   sprintf(log + strlen(log), " %s", ts->toString().c_str());
-  // }
-  // LOG(INFO) << log << endl;
-
   env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 };
 
@@ -591,9 +596,13 @@ BlockingQueue<Frame*> frameQue;
 BlockingQueue<AVFrame*> picQue;
 
 void onNextFrame(Frame* frame) {
-  LOG(INFO) << "onNextFrame " << frame->fRtpTimestamp << " " << frame->fSize
-            << endl;
+  VLOG(ERROR) << "onNextFrame " << frame->fNpt << " " << frame->fSize << endl;
   frameQue.push(frame);
+
+  // if (frame->fNpt >= 10.0f) {
+  // FIXME:shutdown rtp streams
+  // ta->setOnNextFrameCB(NULL);
+  // }
 }
 
 void decoderThreadFunc() {
@@ -681,20 +690,7 @@ void decoderThreadFunc() {
   sws_freeContext(sws);
 }
 
-int main(int argc, char** argv) {
-  progName = argv[0];
-
-  // We need at least one argument:
-  if (argc < 2) {
-    LOG(FATAL) << "Usage: " << progName << " <rtsp-url-1> ... <rtsp-url-N>\n"
-               << "\t(where each <rtsp-url-i> is a \"rtsp://\" URL)\n";
-    return 1;
-  }
-
-  // setting up singal handler
-  signal(SIGHUP, signalHandlerShutdown);
-  signal(SIGUSR1, signalHandlerShutdown);
-
+void init() {
   /* init glog */
   {
     google::InitGoogleLogging(progName);
@@ -706,9 +702,34 @@ int main(int argc, char** argv) {
     FLAGS_minloglevel = 0;      // INFO/WARNNING/ERROR/FATAL
   }
 
+  if (env != NULL) {
+    env->reclaim();
+    env = NULL;
+  }
+  if (scheduler != NULL) {
+    delete scheduler;
+    scheduler = NULL;
+  }
+
   /* setting up our usage environment */
   scheduler = BasicTaskScheduler::createNew();
   env = OurUsageEnvironment::createNew(*scheduler);
+}
+
+int main(int argc, char** argv) {
+  progName = argv[0];
+
+  // setting up singal handler
+  signal(SIGHUP, signalHandlerShutdown);
+  signal(SIGUSR1, signalHandlerShutdown);
+
+  init();
+
+  // We need at least one argument:
+  if (argc < 2) {
+    LOG(FATAL) << "Usage: " << progName << " <mpd-url>\n" << endl;
+    return 1;
+  }
 
   // get a VideoDesc from json
   videoDesc = getVideoDesc(argv[1]);
@@ -718,11 +739,8 @@ int main(int argc, char** argv) {
 
   // parse VideoDesc
 
-  // parse tile rows and col from sprops
-  numRows = 3;
-  numCols = 3;
-  rowHeights = {256, 256, 208};
-  colWidths = {384, 448, 448};
+  auto numRows = videoDesc->numRows;
+  auto numCols = videoDesc->numCols;
 
   // grid
   unsigned x, y, w, h;

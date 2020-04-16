@@ -81,13 +81,9 @@ Boolean timeGT(double a, double b, double tollerance = 0.01) {
 
 BlockingQueue<Frame*> que;
 
-Frame::Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp,
-             Boolean rtpMarker, u_int32_t rtpSeqNum, double npt)
-    : fSize(size),
-      fRtpTimestamp(rtpTimestamp),
-      fRtpMarker(rtpMarker),
-      fRtpSeqNumber(rtpSeqNum),
-      fNpt(npt) {
+Frame::Frame(u_int8_t* data, u_int32_t size, double npt, Boolean rtpMarker,
+             u_int32_t rtpSeqNum)
+    : fSize(size), fNpt(npt), fRtpMarker(rtpMarker), fRtpSeqNumber(rtpSeqNum) {
   fData = new u_int8_t[fSize];
   memmove(fData, data, size);
 }
@@ -100,26 +96,16 @@ double TileBuffer::curPlayTime() {
   if (fNumAvailableFrames == 0) return PLAY_TIME_UNAVAILABLE;
 
   return fFrames.front()->fNpt;
-
-  int64_t timestampOffset =
-      fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
-  int64_t npt = ourSubsession->playStartTime() *
-                    ourSubsession->rtpSource()->timestampFrequency() +
-                timestampOffset;
-
-  return npt;
-  // return fFrames.front()->fRtpTimestamp - ourSubsession->rtpInfo.timestamp;
 }
 
 TileBuffer::TileBuffer(TileAgg* agg, MediaSubsession* subsession, double start)
     : ourAgg(agg),
       ourSubsession(subsession),
       fNumAvailableFrames(0),
-       fLastNpt(PLAY_TIME_UNAVAILABLE) {}
+      fLastNpt(PLAY_TIME_UNAVAILABLE) {}
 
-void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
-                            u_int64_t rtpTimestamp, u_int32_t rtpSeq,
-                            Boolean rtpMarker, double npt) {
+void TileBuffer::queueFrame(u_int8_t* data, unsigned size, double npt,
+                            u_int32_t rtpSeq, Boolean rtpMarker) {
   auto naluType = (data[0] & 0x7E) >> 1;
   if (naluType >= 32) {
     return;
@@ -153,18 +139,17 @@ void TileBuffer::queueFrame(u_int8_t* data, unsigned size,
   }
 
   // 检查rtpTimestamp是否增加，更新可用帧数
-  if (ourSubsession->rtpInfo.timestamp != 0) {
-    if (fLastNpt != PLAY_TIME_UNAVAILABLE && !timeEQ(npt, fLastNpt))
-      fNumAvailableFrames = fFrames.size();
-  } else {  // 应在PLAY response之后才queueFrame
+  if (ourSubsession->rtpInfo.timestamp == 0) {
     LOG(ERROR) << "rtpInfo.timestamp is 0!!" << endl;
   }
 
+  if (fLastNpt != PLAY_TIME_UNAVAILABLE && !timeEQ(npt, fLastNpt))
+    fNumAvailableFrames = fFrames.size();
   // 帧入队
-  auto frame = new Frame(data, size, rtpTimestamp, rtpMarker, rtpSeq, npt);
+  auto frame = new Frame(data, size, npt, rtpMarker, rtpSeq);
   fFrames.push_back(frame);
 
-  // 记录上一个rtpTimestamp
+  // 记录上一个npt
   fLastNpt = npt;
 }
 
@@ -271,12 +256,6 @@ Boolean TileAgg::continuePlaying() {
     ts->ourSubsession->rtpSource()->getNextFrame(ts->fBuffer, MAX_TILE_BUF_SIZE,
                                                  afterTileGettingFrame, ts,
                                                  onTileSourceClosure, ts);
-    // DEBUG:
-    // LOG(INFO)
-    //         << " " <<
-    //         ts->ourSubsession->parentSession().sessionDescription()
-    //         << " continue playing"
-    //         << "\n";
   }
   return True;
 }
@@ -290,11 +269,8 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
   auto buffer = ts->fBuffer;
   auto naluType = (buffer[0] & 0x7E) >> 1;
   u_int32_t rtpInfoSeqNum = ts->ourSubsession->rtpInfo.seqNum;
-  u_int32_t rtpInfoTS = ts->ourSubsession->rtpInfo.timestamp;
   u_int32_t curPacketRTPSeqNum =
       ts->ourSubsession->rtpSource()->curPacketRTPSeqNum();
-  u_int32_t curPacketRTPTimestamp =
-      ts->ourSubsession->rtpSource()->curPacketRTPTimestamp();
   Boolean curPacketMarkerBit =
       ts->ourSubsession->rtpSource()->curPacketMarkerBit();
   double npt = ts->ourSubsession->getNormalPlayTime(presentationTime);
@@ -310,6 +286,10 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
   }
 
   // DEBUG: QoE
+  static long bytesReceieved = 0;
+  bytesReceieved += frameSize;
+  LOG(INFO) << "npt=" << ta->fLastPlayTime << " receieved bytes "
+            << bytesReceieved << endl;
   // Assume that there's only one SSRC source (usually the case)
   // RTPReceptionStatsDB::Iterator statsIter(
   //     ts->ourSubsession->rtpSource()->receptionStatsDB());
@@ -342,192 +322,159 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
 
   // DEBUG:
   char log[1024];
-  sprintf(
-      log,
-      "%s npt=%5.3f naluType=%-2u size=%-5u rSeq=%-5u rTS=%-7u mark=%d seq=%-7u"
-      " TS=%-12u PTS=%12ld.%06ld\n",
-      ts->ourSubsession->parentSession().sessionDescription(), npt, naluType,
-      frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
-      curPacketRTPTimestamp - rtpInfoTS, curPacketMarkerBit, curPacketRTPSeqNum,
-      curPacketRTPTimestamp, presentationTime.tv_sec, presentationTime.tv_usec);
+  sprintf(log,
+          "%s npt=%5.3f naluType=%-2u size=%-5u rSeq=%-5u mark=%d seq=%-7u"
+          " PTS=%12ld.%06ld\n",
+          ts->ourSubsession->parentSession().sessionDescription(), npt,
+          naluType, frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
+          curPacketMarkerBit, curPacketRTPSeqNum, presentationTime.tv_sec,
+          presentationTime.tv_usec);
   LOG(INFO) << log;
 
-  ts->queueFrame(buffer, frameSize, curPacketRTPTimestamp, curPacketRTPSeqNum,
-                 curPacketMarkerBit, npt);
+  ts->queueFrame(buffer, frameSize, npt, curPacketRTPSeqNum,
+                 curPacketMarkerBit);
 
   while (1) {
     Frame* frame = ta->aggregate();
 
     // no frame available
     if (frame == NULL) break;
-
-    // HACK: send VPS SPS PPS
-    // static Boolean send = True;
-    // if (send) {
-    //   send = False;
-
-    //   u_int8_t buf[10240];
-    //   u_int32_t frameSize = 0;
-    //   Frame* frame;
-
-    //   MediaSubsession* subsession = ta->fTiles.front()->ourSubsession;
-    //   char const* base64List[3] = {subsession->fmtp_spropvps(),
-    //                                subsession->fmtp_spropsps(),
-    //                                subsession->fmtp_sproppps()};
-    //   for (int i = 0; i < 3; i++) {
-    //     auto base64 = base64List[i];
-    //     unsigned num;
-    //     auto records = parseSPropParameterSets(base64, num);
-    //     for (unsigned j = 0; j < num; j++) {
-    //       auto record = records[j];
-    //       auto data = record.sPropBytes;
-    //       auto size = record.sPropLength;
-    //       memmove(buf + frameSize, START_CODE, 4);
-    //       memmove(buf + frameSize + 4, data, size);
-    //       frameSize += size + 4;
-    //     }
-    //   }
-    //   frame = new Frame(buf, frameSize);
-    //   que.push(frame);
-    // }
-
-    // que.push(frame);
   };
 
   // for next time
   ta->continuePlaying();
 }
 
-void play() {
-  // DEBUG: flags
-  static Boolean scale = False;
+// void play() {
+//   // DEBUG: flags
+//   static Boolean scale = False;
 
-  static Boolean init = True;
-  static AVCodecContext* avctx;
-  static AVCodec* codec;
-  static AVPacket* avpkt;
-  static AVFrame avframe, frameYUV;
-  // static int pixel_w = 1840, pixel_h = 992;
-  static int pixel_w = 1280, pixel_h = 720;
-  // static int pixel_w = 896, pixel_h = 512;
-  static u_int8_t* buffer;
+//   static Boolean init = True;
+//   static AVCodecContext* avctx;
+//   static AVCodec* codec;
+//   static AVPacket* avpkt;
+//   static AVFrame avframe, frameYUV;
+//   // static int pixel_w = 1840, pixel_h = 992;
+//   static int pixel_w = 1280, pixel_h = 720;
+//   // static int pixel_w = 896, pixel_h = 512;
+//   static u_int8_t* buffer;
 
-  static SDL_Window* window;
-  static SDL_Renderer* renderer;
-  static SDL_RendererInfo renderer_info = {0};
-  static SDL_Texture* texture;
-  static struct SwsContext* sws;
-  static AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
-  static AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P;
-  static int screen_w = pixel_w;  // 1840 / 2;
-  static int screen_h = pixel_h;  // 992 / 2;
-  static SDL_Rect rect{.x = 0, .y = 0, .w = screen_w, .h = screen_h};
+//   static SDL_Window* window;
+//   static SDL_Renderer* renderer;
+//   static SDL_RendererInfo renderer_info = {0};
+//   static SDL_Texture* texture;
+//   static struct SwsContext* sws;
+//   static AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
+//   static AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P;
+//   static int screen_w = pixel_w;  // 1840 / 2;
+//   static int screen_h = pixel_h;  // 992 / 2;
+//   static SDL_Rect rect{.x = 0, .y = 0, .w = screen_w, .h = screen_h};
 
-  int ret;
+//   int ret;
 
-  if (init) {
-    init = False;
+//   if (init) {
+//     init = False;
 
-    // av init
-    codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-    if (!codec) exit(AVERROR_DECODER_NOT_FOUND);
+//     // av init
+//     codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+//     if (!codec) exit(AVERROR_DECODER_NOT_FOUND);
 
-    avctx = avcodec_alloc_context3(codec);
-    if (!avctx) exit(AVERROR(ENOMEM));
+//     avctx = avcodec_alloc_context3(codec);
+//     if (!avctx) exit(AVERROR(ENOMEM));
 
-    if (!codec) {
-      fprintf(stderr, "codec not found!");
-      exit(AVERROR(EINVAL));
-    }
+//     if (!codec) {
+//       fprintf(stderr, "codec not found!");
+//       exit(AVERROR(EINVAL));
+//     }
 
-    if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) {
-      exit(-1);
-    }
+//     if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) {
+//       exit(-1);
+//     }
 
-    // init decoder
-    // avctx->pix_fmt = sourceFormat;
-    sws = sws_getContext(pixel_w, pixel_h, sourceFormat, screen_w, screen_h,
-                         targetFormat, SWS_BICUBIC, NULL, NULL, NULL);
-    buffer = (unsigned char*)av_malloc(
-        av_image_get_buffer_size(AV_PIX_FMT_YUV420P, screen_w, screen_h, 1));
-    av_image_fill_arrays(frameYUV.data, frameYUV.linesize, buffer,
-                         AV_PIX_FMT_YUV420P, screen_w, screen_h, 1);
+//     // init decoder
+//     // avctx->pix_fmt = sourceFormat;
+//     sws = sws_getContext(pixel_w, pixel_h, sourceFormat, screen_w, screen_h,
+//                          targetFormat, SWS_BICUBIC, NULL, NULL, NULL);
+//     buffer = (unsigned char*)av_malloc(
+//         av_image_get_buffer_size(AV_PIX_FMT_YUV420P, screen_w, screen_h, 1));
+//     av_image_fill_arrays(frameYUV.data, frameYUV.linesize, buffer,
+//                          AV_PIX_FMT_YUV420P, screen_w, screen_h, 1);
 
-    // SDL init
-    int flags = SDL_INIT_VIDEO | SDL_WINDOW_RESIZABLE;
+//     // SDL init
+//     int flags = SDL_INIT_VIDEO | SDL_WINDOW_RESIZABLE;
 
-    if (SDL_Init(flags)) {
-      av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n",
-             SDL_GetError());
-      av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-      exit(1);
-    }
-    window =
-        SDL_CreateWindow("tileagg", SDL_WINDOWPOS_UNDEFINED,
-                         SDL_WINDOWPOS_UNDEFINED, screen_w, screen_h, flags);
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-    if (window) {
-      renderer = SDL_CreateRenderer(
-          window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-      if (!renderer) {
-        av_log(NULL, AV_LOG_WARNING,
-               "Failed to initialize a hardware accelerated renderer: %s\n",
-               SDL_GetError());
-        renderer = SDL_CreateRenderer(window, -1, 0);
-      }
-      if (renderer) {
-        if (!SDL_GetRendererInfo(renderer, &renderer_info))
-          av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n",
-                 renderer_info.name);
-      }
-    }
-    if (!window || !renderer || !renderer_info.num_texture_formats) {
-      av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s",
-             SDL_GetError());
-      exit(-1);
-    }
-    SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
-    SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
+//     if (SDL_Init(flags)) {
+//       av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n",
+//              SDL_GetError());
+//       av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
+//       exit(1);
+//     }
+//     window =
+//         SDL_CreateWindow("tileagg", SDL_WINDOWPOS_UNDEFINED,
+//                          SDL_WINDOWPOS_UNDEFINED, screen_w, screen_h, flags);
+//     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+//     if (window) {
+//       renderer = SDL_CreateRenderer(
+//           window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+//       if (!renderer) {
+//         av_log(NULL, AV_LOG_WARNING,
+//                "Failed to initialize a hardware accelerated renderer: %s\n",
+//                SDL_GetError());
+//         renderer = SDL_CreateRenderer(window, -1, 0);
+//       }
+//       if (renderer) {
+//         if (!SDL_GetRendererInfo(renderer, &renderer_info))
+//           av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n",
+//                  renderer_info.name);
+//       }
+//     }
+//     if (!window || !renderer || !renderer_info.num_texture_formats) {
+//       av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s",
+//              SDL_GetError());
+//       exit(-1);
+//     }
+//     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
+//     SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
 
-    texture =
-        SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV,
-                          SDL_TEXTUREACCESS_STREAMING, screen_w, screen_h);
-  }
+//     texture =
+//         SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV,
+//                           SDL_TEXTUREACCESS_STREAMING, screen_w, screen_h);
+//   }
 
-  while (1) {
-    auto frame = que.pop();
+//   while (1) {
+//     auto frame = que.pop();
 
-    avpkt = av_packet_alloc();
-    if (av_new_packet(avpkt, frame->fSize)) std::cout << "error";
+//     avpkt = av_packet_alloc();
+//     if (av_new_packet(avpkt, frame->fSize)) std::cout << "error";
 
-    memmove(avpkt->data, frame->fData, frame->fSize);
-    delete frame;
+//     memmove(avpkt->data, frame->fData, frame->fSize);
+//     delete frame;
 
-    ret = avcodec_send_packet(avctx, avpkt);
-    while (ret >= 0) {
-      ret = avcodec_receive_frame(avctx, &avframe);
-      if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-        break;
-      else if (ret < 0) {
-        std::cout << "Error during decoding\n";
-        exit(1);
-      }
-      // DEBUG: scale?
-      if (scale)
-        sws_scale(sws, (const uint8_t* const*)avframe.data, avframe.linesize, 0,
-                  avframe.height, frameYUV.data, frameYUV.linesize);
-      else
-        frameYUV = avframe;
-      SDL_UpdateYUVTexture(texture, &rect, frameYUV.data[0],
-                           frameYUV.linesize[0], frameYUV.data[1],
-                           frameYUV.linesize[1], frameYUV.data[2],
-                           frameYUV.linesize[2]);
-      SDL_RenderClear(renderer);
-      SDL_RenderCopy(renderer, texture, NULL, &rect);
-      SDL_RenderPresent(renderer);
-    }
-  }
-}
+//     ret = avcodec_send_packet(avctx, avpkt);
+//     while (ret >= 0) {
+//       ret = avcodec_receive_frame(avctx, &avframe);
+//       if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+//         break;
+//       else if (ret < 0) {
+//         std::cout << "Error during decoding\n";
+//         exit(1);
+//       }
+//       // DEBUG: scale?
+//       if (scale)
+//         sws_scale(sws, (const uint8_t* const*)avframe.data, avframe.linesize, 0,
+//                   avframe.height, frameYUV.data, frameYUV.linesize);
+//       else
+//         frameYUV = avframe;
+//       SDL_UpdateYUVTexture(texture, &rect, frameYUV.data[0],
+//                            frameYUV.linesize[0], frameYUV.data[1],
+//                            frameYUV.linesize[1], frameYUV.data[2],
+//                            frameYUV.linesize[2]);
+//       SDL_RenderClear(renderer);
+//       SDL_RenderCopy(renderer, texture, NULL, &rect);
+//       SDL_RenderPresent(renderer);
+//     }
+//   }
+// }
 
 // FIXME: merge tiles, taking VPS/SPS/PPS recorrect in concern
 Frame* TileAgg::aggregate() {
@@ -717,6 +664,7 @@ void TileAgg::onTileSourceClosure(void* clientData) {
   TileBuffer* ts = (TileBuffer*)clientData;
 
   LOG(INFO) << "onTileSourceClosure " << ts << "\n";
+  exit(-1);
 }
 
 void TileAgg::doGetNextFrame() {

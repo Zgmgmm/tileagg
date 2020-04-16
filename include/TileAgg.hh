@@ -15,16 +15,15 @@ class TileBuffer;
 
 class Frame {
  public:
-  Frame(u_int8_t* data, u_int32_t size, u_int64_t rtpTimestamp = -1,
-        Boolean rtpMarker = False, u_int32_t rtpSeqNum = -1, double npt = -1.0);
+  Frame(u_int8_t* data, u_int32_t size, double npt = -1.0, Boolean rtpMarker = False,
+        u_int32_t rtpSeqNum = -1);
 
   ~Frame();
   u_int32_t fSize;
   u_int8_t* fData;
-  u_int64_t fRtpTimestamp;
+  double fNpt;
   Boolean fRtpMarker;
   u_int32_t fRtpSeqNumber;
-  double fNpt;
 };
 
 class TileBuffer {
@@ -32,17 +31,13 @@ class TileBuffer {
   TileBuffer(TileAgg* agg, MediaSubsession* subsession = NULL,
              double start = 0.0f);
 
-  void queueFrame(u_int8_t* data, unsigned size, u_int64_t rtpTimestamp,
-                  u_int32_t rtpSeq, Boolean rtpMarker, double npt);
+  void queueFrame(u_int8_t* data, unsigned size, double npt, u_int32_t rtpSeq,
+                  Boolean rtpMarker);
 
   Frame* dequeueFrame();
   // return earliest play time in ticks (npt*frequency) or -1 when no frame
   // available
   double curPlayTime();
-
-  // TODO:
-  // reassign MediaSubsession
-  void setMediaSubsession(MediaSubsession* subsession) {}
 
   u_int8_t fBuffer[1024000];
   TileAgg* ourAgg;
@@ -50,9 +45,8 @@ class TileBuffer {
   std::deque<Frame*> fFrames;
   u_int32_t fNumAvailableFrames;
 
-  
   double fLastNpt;
- };
+};
 
 class TileAgg : public FramedSource {
  public:

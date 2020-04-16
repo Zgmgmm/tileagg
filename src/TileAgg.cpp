@@ -26,11 +26,7 @@
 #include "BitVector.hh"
 #include "groupsock/GroupsockHelper.hh"
 #include "strDup.hh"
-
-// SDL
-#include <SDL.h>
-#include <SDL_thread.h>
-
+ 
 // FFMPEG
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -79,7 +75,6 @@ Boolean timeGT(double a, double b, double tollerance = 0.01) {
   return a > b;
 }
 
-BlockingQueue<Frame*> que;
 
 Frame::Frame(u_int8_t* data, u_int32_t size, double npt, Boolean rtpMarker,
              u_int32_t rtpSeqNum)
@@ -339,142 +334,12 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
 
     // no frame available
     if (frame == NULL) break;
+    frame=NULL;
   };
 
   // for next time
   ta->continuePlaying();
 }
-
-// void play() {
-//   // DEBUG: flags
-//   static Boolean scale = False;
-
-//   static Boolean init = True;
-//   static AVCodecContext* avctx;
-//   static AVCodec* codec;
-//   static AVPacket* avpkt;
-//   static AVFrame avframe, frameYUV;
-//   // static int pixel_w = 1840, pixel_h = 992;
-//   static int pixel_w = 1280, pixel_h = 720;
-//   // static int pixel_w = 896, pixel_h = 512;
-//   static u_int8_t* buffer;
-
-//   static SDL_Window* window;
-//   static SDL_Renderer* renderer;
-//   static SDL_RendererInfo renderer_info = {0};
-//   static SDL_Texture* texture;
-//   static struct SwsContext* sws;
-//   static AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
-//   static AVPixelFormat targetFormat = AV_PIX_FMT_YUV420P;
-//   static int screen_w = pixel_w;  // 1840 / 2;
-//   static int screen_h = pixel_h;  // 992 / 2;
-//   static SDL_Rect rect{.x = 0, .y = 0, .w = screen_w, .h = screen_h};
-
-//   int ret;
-
-//   if (init) {
-//     init = False;
-
-//     // av init
-//     codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-//     if (!codec) exit(AVERROR_DECODER_NOT_FOUND);
-
-//     avctx = avcodec_alloc_context3(codec);
-//     if (!avctx) exit(AVERROR(ENOMEM));
-
-//     if (!codec) {
-//       fprintf(stderr, "codec not found!");
-//       exit(AVERROR(EINVAL));
-//     }
-
-//     if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) {
-//       exit(-1);
-//     }
-
-//     // init decoder
-//     // avctx->pix_fmt = sourceFormat;
-//     sws = sws_getContext(pixel_w, pixel_h, sourceFormat, screen_w, screen_h,
-//                          targetFormat, SWS_BICUBIC, NULL, NULL, NULL);
-//     buffer = (unsigned char*)av_malloc(
-//         av_image_get_buffer_size(AV_PIX_FMT_YUV420P, screen_w, screen_h, 1));
-//     av_image_fill_arrays(frameYUV.data, frameYUV.linesize, buffer,
-//                          AV_PIX_FMT_YUV420P, screen_w, screen_h, 1);
-
-//     // SDL init
-//     int flags = SDL_INIT_VIDEO | SDL_WINDOW_RESIZABLE;
-
-//     if (SDL_Init(flags)) {
-//       av_log(NULL, AV_LOG_FATAL, "Could not initialize SDL - %s\n",
-//              SDL_GetError());
-//       av_log(NULL, AV_LOG_FATAL, "(Did you set the DISPLAY variable?)\n");
-//       exit(1);
-//     }
-//     window =
-//         SDL_CreateWindow("tileagg", SDL_WINDOWPOS_UNDEFINED,
-//                          SDL_WINDOWPOS_UNDEFINED, screen_w, screen_h, flags);
-//     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-//     if (window) {
-//       renderer = SDL_CreateRenderer(
-//           window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-//       if (!renderer) {
-//         av_log(NULL, AV_LOG_WARNING,
-//                "Failed to initialize a hardware accelerated renderer: %s\n",
-//                SDL_GetError());
-//         renderer = SDL_CreateRenderer(window, -1, 0);
-//       }
-//       if (renderer) {
-//         if (!SDL_GetRendererInfo(renderer, &renderer_info))
-//           av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n",
-//                  renderer_info.name);
-//       }
-//     }
-//     if (!window || !renderer || !renderer_info.num_texture_formats) {
-//       av_log(NULL, AV_LOG_FATAL, "Failed to create window or renderer: %s",
-//              SDL_GetError());
-//       exit(-1);
-//     }
-//     SDL_EventState(SDL_SYSWMEVENT, SDL_IGNORE);
-//     SDL_EventState(SDL_USEREVENT, SDL_IGNORE);
-
-//     texture =
-//         SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV,
-//                           SDL_TEXTUREACCESS_STREAMING, screen_w, screen_h);
-//   }
-
-//   while (1) {
-//     auto frame = que.pop();
-
-//     avpkt = av_packet_alloc();
-//     if (av_new_packet(avpkt, frame->fSize)) std::cout << "error";
-
-//     memmove(avpkt->data, frame->fData, frame->fSize);
-//     delete frame;
-
-//     ret = avcodec_send_packet(avctx, avpkt);
-//     while (ret >= 0) {
-//       ret = avcodec_receive_frame(avctx, &avframe);
-//       if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-//         break;
-//       else if (ret < 0) {
-//         std::cout << "Error during decoding\n";
-//         exit(1);
-//       }
-//       // DEBUG: scale?
-//       if (scale)
-//         sws_scale(sws, (const uint8_t* const*)avframe.data, avframe.linesize, 0,
-//                   avframe.height, frameYUV.data, frameYUV.linesize);
-//       else
-//         frameYUV = avframe;
-//       SDL_UpdateYUVTexture(texture, &rect, frameYUV.data[0],
-//                            frameYUV.linesize[0], frameYUV.data[1],
-//                            frameYUV.linesize[1], frameYUV.data[2],
-//                            frameYUV.linesize[2]);
-//       SDL_RenderClear(renderer);
-//       SDL_RenderCopy(renderer, texture, NULL, &rect);
-//       SDL_RenderPresent(renderer);
-//     }
-//   }
-// }
 
 // FIXME: merge tiles, taking VPS/SPS/PPS recorrect in concern
 Frame* TileAgg::aggregate() {
@@ -488,15 +353,15 @@ Frame* TileAgg::aggregate() {
   u_int8_t naluType;
   u_int8_t* data;
 
+  if(fTiles.empty())return NULL;
   // get next play time
   for (auto ts : fTiles) {
     while (1) {
       playTime = ts->curPlayTime();
       if (playTime == PLAY_TIME_UNAVAILABLE) {
-        LOG(INFO)
-
-            << " awaiting tile "
-            << ts->ourSubsession->parentSession().sessionDescription() << "\n";
+        LOG(INFO) << " awaiting tile "
+                  << ts->ourSubsession->parentSession().sessionDescription()
+                  << "\n";
         return NULL;
       }
 
@@ -510,9 +375,8 @@ Frame* TileAgg::aggregate() {
 
       LOG(INFO) << " drop frame "
                 << ts->ourSubsession->parentSession().sessionDescription()
-                << " naluType=" << naluType
-                << " play_time=" << (double)playTime / 90000
-                << " last_play_time=" << (double)fLastPlayTime / 90000 << "\n";
+                << " naluType=" << naluType << " play_time=" << (double)playTime
+                << " last_play_time=" << (double)fLastPlayTime << "\n";
     }
     if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
       earliestPlayTime = playTime;
@@ -620,7 +484,7 @@ Frame* TileAgg::aggregate() {
   outTilesMap.clear();
   outTiles.clear();
 
-  LOG(INFO) << " play_time=" << (double)earliestPlayTime / 90000
+  LOG(INFO) << " play_time=" << earliestPlayTime
             << " aggregate tt_num=" << (int)tt_num
             << " tt_size=" << (int)tt_size << "\n";
 

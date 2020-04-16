@@ -48,6 +48,8 @@ void processInput(GLFWwindow* window);
 void key_callback(GLFWwindow* window, int key, int scancode, int action,
                   int mods);
 
+GLFWwindow* window;
+
 // queue
 extern BlockingQueue<AVFrame*> picQue;
 // thread
@@ -96,9 +98,21 @@ Sphere sphere(1.0f, numSectors,
 float deltaTime = 0.0f;  // time between current frame and last frame
 float lastFrame = 0.0f;
 
+int status = 0;
+
+typedef void TaskFunc(void* clientData);
 void startRendor() {
   cout << "rendor thread started." << endl;
+  status = 1;
   rendorThread = new thread(rendorThreadFunc);
+}
+
+void stopRendor() {
+  status = 0;
+  glfwSetWindowShouldClose(window, true);
+  rendorThread->join();
+  delete rendorThread;
+  rendorThread = NULL;
 }
 
 template <typename T>
@@ -162,8 +176,6 @@ int genView(unsigned int& VBO, unsigned int& VAO, unsigned int& EBO,
 void calculateFoV() {
   if (frozeFoV) return;
 
-  static std::mutex mtx;
-  mtx.lock();
 
   // get focus and FoV
   // sphere
@@ -243,8 +255,8 @@ void calculateFoV() {
       };
 
       // vertices in FoV
-      visibleVertices.clear();
-      predictedVisibleVertices.clear();
+      vector<glm::vec2> tmpVisibleVertices;
+      vector<glm::vec2> tmpPredictedVisibleVertices; 
       for (int i = 0; i < numStacks; i++) {
         for (int j = 0; j < numSectors; j++) {
           auto vertex = verticesSphere +
@@ -258,16 +270,17 @@ void calculateFoV() {
           auto glPos = mvp * pos;
           auto glPosPredict = mvpPredict * pos;
           if (visible(glPos)) {
-            visibleVertices.push_back(coord);
+            tmpVisibleVertices.push_back(coord);
           } else if (visible(glPosPredict)) {
-            predictedVisibleVertices.push_back(coord);
+            tmpPredictedVisibleVertices.push_back(coord);
           }
         }
       }
+
+      visibleVertices = std::move(tmpVisibleVertices);
+      predictedVisibleVertices = std::move(tmpPredictedVisibleVertices);
     }
   }
-
-  mtx.unlock();
 }
 
 int rendorThreadFunc() {
@@ -286,7 +299,7 @@ int rendorThreadFunc() {
 
   // glfw window creation
   // --------------------
-  GLFWwindow* window =
+  window =
       glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "LearnOpenGL", NULL, NULL);
   if (window == NULL) {
     std::cout << "Failed to create GLFW window" << std::endl;
@@ -405,8 +418,6 @@ int rendorThreadFunc() {
   // -----------
   while (!glfwWindowShouldClose(window)) {
     av_usleep(10 * 1e3);
-
-    //   glfwSetWindowShouldClose(window, 1);
     // per-frame time logic
     // --------------------
     float currentFrame = glfwGetTime();
@@ -427,6 +438,9 @@ int rendorThreadFunc() {
     glBindTexture(GL_TEXTURE_2D, texture1);
     if (!picQue.empty()) {  // update texture
       auto frame = picQue.pop();
+      if (frame == NULL) {
+        break;  // specially frame means STOP!
+      }
       auto data = frame->data[0];
       texW = frame->width;
       texH = frame->height;
@@ -551,6 +565,7 @@ int rendorThreadFunc() {
   // glfw: terminate, clearing all previously allocated GLFW resources.
   // ------------------------------------------------------------------
   glfwTerminate();
+
   return 0;
 }
 

@@ -11,7 +11,6 @@ class StreamClientState {
   virtual ~StreamClientState();
 
  public:
-  MediaSubsessionIterator* iter;
   MediaSession* session;
   MediaSubsession* subsession;
   TaskToken streamTimerTask;

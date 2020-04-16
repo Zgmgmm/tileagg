@@ -37,7 +37,8 @@ class BlockingQueue {
     return item;
   }
 
-  bool empty() { return fQue.empty(); };
+  bool empty() { return fQue.empty(); }
+  unsigned size() { return fQue.size(); }
 
  private:
   u_int32_t fMaxSize;

@@ -41,14 +41,23 @@ static char START_CODE[] = {0, 0, 0, 1};
 
 /* global context */
 char* progName;
+char* url;
+
 TaskScheduler* scheduler;
 UsageEnvironment* env;
 char eventLoopWatchVariable;
 VideoDesc* videoDesc;
-vector<unsigned> rowHeights, colWidths;
 TileState* tileStates[16][16];
+TileState* fallbackLayer;
 unsigned rtspClientCount;
 TileAgg* ta;
+
+thread* decoderThread;
+
+extern void startRendor();
+extern void stopRendor();
+void stopPlay();
+void play();
 
 class VideoTrackDesc : public ToString {
  public:
@@ -69,7 +78,8 @@ class VideoDesc {
   double rap;
   unsigned gop;
   unsigned numRows, numCols;
-  unsigned *rowHeights, *colWidths;
+  unsigned width, height;
+  vector<unsigned> rowHeights, colWidths;
   char* baseUrl;
   char *spropVPS, *spropSPS, *spropPPS;
   vector<VideoTrackDesc*> tracks;
@@ -170,8 +180,8 @@ void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode,
     // this by iterating over the session's 'subsessions', calling
     // "MediaSubsession::initiate()", and then sending a RTSP "SETUP" command,
     // on each one. (Each 'subsession' will have its own data source.)
-    scs.iter = new MediaSubsessionIterator(*scs.session);
-    scs.subsession = scs.iter->next();  // only one now
+    MediaSubsessionIterator iter(*scs.session);
+    scs.subsession = iter.next();  // only one now
 
     // setup subsession
     MediaSubsession* subsession = scs.subsession;
@@ -408,7 +418,8 @@ void shutdownStream(RTSPClient* rtspClient, int exitCode) {
     // might want to comment this out, and replace it with
     // "eventLoopWatchVariable = 1;", so that we leave the LIVE555 event loop,
     // and continue running "main()".)
-    exit(exitCode);
+    eventLoopWatchVariable = 1;
+    // exit(exitCode);
   }
 }
 
@@ -435,13 +446,15 @@ VideoDesc* getVideoDesc(const char* file) {
 
   // FIXME: 从SPS解析
   // parse tile rows and col from sprops
+  videoDesc->width = 1280;
+  videoDesc->height = 720;
   videoDesc->numRows = 3;
   videoDesc->numCols = 3;
-  rowHeights = {256, 256, 208};
-  colWidths = {384, 448, 448};
+  videoDesc->rowHeights = {256, 256, 208};
+  videoDesc->colWidths = {384, 448, 448};
 
-  auto tracks = root["tracks"];
-  for (auto track : tracks) {
+  auto& tracks = root["tracks"];
+  for (auto& track : tracks) {
     auto trackDesc = new VideoTrackDesc();
     trackDesc->url = strDup(track["url"].asCString());
     trackDesc->bitrate = track["bitrate"].asUInt();
@@ -476,10 +489,7 @@ void funcShutdown(void* clientData) {
   auto ts = (TileState*)clientData;
   ourRTSPClient* client = (ourRTSPClient*)ts->rtspClient;
 
-  if (client == NULL) {
-    LOG(INFO) << "tile has no track" << endl;
-    return;
-  }
+  assert(client != NULL);
 
   LOG(INFO) << "shutdown " << ts->videoTrackDesc->toString() << " "
             << rtspClientCount << endl;
@@ -493,15 +503,8 @@ void funcShutdown(void* clientData) {
 
 void funcSetup(void* clientData) {
   auto ts = (TileState*)clientData;
-  ourRTSPClient* client = (ourRTSPClient*)ts->rtspClient;
-  if (ts->videoTrackDesc == NULL) {
-    LOG(ERROR) << "tile has no track" << endl;
-    return;
-  }
-  if (client != NULL) {
-    LOG(INFO) << "tile has client!" << endl;
-    return;
-  }
+  assert(ts->videoTrackDesc != NULL);
+  assert(ts->rtspClient == NULL);
 
   char url[512];
   strcpy(url, videoDesc->baseUrl);
@@ -510,12 +513,9 @@ void funcSetup(void* clientData) {
   LOG(INFO) << "setup " << url << " " << rtspClientCount << endl;
 
   ts->rtspClient = openURL(url);
-  // if (strcmp(url, "rtsp://localhost:8888/vr_1500000_3x3_0x0x384x256.mkv"))
-  //   env->taskScheduler().scheduleDelayedTask(
-  //       2 * 4 * 1e6, (TaskFunc*)funcShutdown, ts->rtspClient);
 };
 
-static long abrDuration = 0.5 * 1e6;
+static long abrDuration = 300 * 1e3;
 
 TileState* findTile(int x, int y) {
   for (unsigned i = 0; i < videoDesc->numRows; ++i) {
@@ -567,42 +567,42 @@ void abr(void* clientData) {
     for (unsigned j = 0; j < videoDesc->numCols; ++j) {
       // if (i == 0 && j == 0) continue;
       auto& ts = tileStates[i][j];
-      if (ts->visible) {
-        if (ts->rtspClient == NULL) {
-          LOG(WARNING) << "tile visible but not active" << *ts << endl;
-          env->taskScheduler().scheduleDelayedTask(0 * 1e6,
-                                                   (TaskFunc*)funcSetup, ts);
-        }
-      } else if (ts->predictedVisible) {
-        if (ts->rtspClient == NULL)
-          env->taskScheduler().scheduleDelayedTask(0 * 1e6,
-                                                   (TaskFunc*)funcSetup, ts);
-      } else {  // invisible now and in the future
+      if (!ts->visible &&
+          !ts->predictedVisible) {  // invisible now and in the future
         if (ts->rtspClient != NULL) {
           auto dt = clock() - ts->lastTimeVisible;
           if ((float)dt / CLOCKS_PER_SEC > 0.5) {  // invisible for 0.5s
-            env->taskScheduler().scheduleDelayedTask(
-                0 * 1e6, (TaskFunc*)funcShutdown, ts);
+            funcShutdown(ts);
           }
         }
+      } else if (ts->visible) {
+        if (ts->rtspClient == NULL) {
+          LOG(WARNING) << "tile visible but not active " << *ts << endl;
+          funcSetup(ts);
+        }
+      } else if (ts->predictedVisible) {
+        if (ts->rtspClient == NULL) funcSetup(ts);
       }
     }
   }
 
-  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
+  if (abrDuration > 0)
+    env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 };
 
 BlockingQueue<Frame*> frameQue;
 BlockingQueue<AVFrame*> picQue;
 
 void onNextFrame(Frame* frame) {
-  VLOG(ERROR) << "onNextFrame " << frame->fNpt << " " << frame->fSize << endl;
+  LOG(ERROR) << "onNextFrame " << 1 + frameQue.size() << " " << frame->fNpt
+             << endl;
+
   frameQue.push(frame);
 
-  // if (frame->fNpt >= 10.0f) {
-  // FIXME:shutdown rtp streams
-  // ta->setOnNextFrameCB(NULL);
-  // }
+  if (frame->fNpt >= videoDesc->duration) {
+    // FIXME: shutdown rtp streams
+    stopPlay();
+  }
 }
 
 void decoderThreadFunc() {
@@ -611,7 +611,7 @@ void decoderThreadFunc() {
   AVCodec* codec;
   AVPacket* avpkt;
   AVFrame* avframe;
-  struct SwsContext* sws;
+  struct SwsContext* sws = NULL;
   int srcW, srcH, dstW, dstH;
   AVPixelFormat srcFmt;
   AVPixelFormat dstFmt = AV_PIX_FMT_RGB24;
@@ -637,6 +637,32 @@ void decoderThreadFunc() {
   // allocation
   avframe = av_frame_alloc();
   avpkt = av_packet_alloc();
+
+  // init decoder
+  // send VPS/SPS/PPS
+  {
+    u_int8_t buf[1024];
+    u_int32_t frameSize = 0;
+    Frame* frame;
+
+    char const* base64List[3] = {videoDesc->spropVPS, videoDesc->spropSPS,
+                                 videoDesc->spropPPS};
+    for (int i = 0; i < 3; i++) {
+      auto base64 = base64List[i];
+      unsigned num;
+      auto records = parseSPropParameterSets(base64, num);
+      for (unsigned j = 0; j < num; j++) {
+        auto record = records[j];
+        auto data = record.sPropBytes;
+        auto size = record.sPropLength;
+        memmove(buf + frameSize, START_CODE, 4);
+        memmove(buf + frameSize + 4, data, size);
+        frameSize += size + 4;
+      }
+    }
+    frame = new Frame(buf, frameSize);
+    frameQue.push(frame);
+  }
 
   while (1) {
     auto frame = frameQue.pop();
@@ -690,6 +716,86 @@ void decoderThreadFunc() {
   sws_freeContext(sws);
 }
 
+int play(char* url) {
+  // get a VideoDesc from json
+  videoDesc = getVideoDesc(url);
+  if (videoDesc == NULL) {
+    return -1;
+  }
+
+  // grid
+  auto numRows = videoDesc->numRows;
+  auto numCols = videoDesc->numCols;
+  unsigned x, y, w, h;
+  x = y = w = h = 0;
+  for (unsigned i = 0; i < numRows; ++i) {
+    x = 0;
+    h = videoDesc->rowHeights[i];
+    for (unsigned j = 0; j < numCols; ++j) {
+      w = videoDesc->colWidths[j];
+      auto ts = new TileState();
+      ts->region = Rect(x, y, w, h);
+      tileStates[i][j] = ts;
+      x += w;
+    }
+    y += h;
+  }
+
+  // DEBUG:
+  for (unsigned i = 0; i < numRows; ++i) {
+    for (unsigned j = 0; j < numCols; ++j) {
+      LOG(INFO) << *tileStates[i][j];
+    }
+  }
+
+  // find available tracks for each tile
+  for (unsigned i = 0; i < numRows; ++i) {
+    for (unsigned j = 0; j < numCols; ++j) {
+      auto ts = tileStates[i][j];
+      for (auto trackDesc : videoDesc->tracks) {
+        if (!trackDesc->region.equals(ts->region)) continue;
+        ts->videoTrackDesc = trackDesc;
+        break;
+      }
+    }
+  }
+
+  // init TileAgg
+  ta = TileAgg::createNew(*env);
+  ta->setOnNextFrameCB(onNextFrame);
+
+  // start decoder and rendor
+  decoderThread = new thread(decoderThreadFunc);
+
+  startRendor();
+
+  // setup fallback layer
+  for (auto trackDesc : videoDesc->tracks) {
+    auto& region = trackDesc->region;
+    if (region.w == videoDesc->width && region.h == videoDesc->height) {
+      auto ts = new TileState();
+      ts->region = trackDesc->region;
+      ts->videoTrackDesc = trackDesc;
+      fallbackLayer = ts;
+      env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
+      break;
+    }
+  }
+
+  // FoV adaptive bitrate
+  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
+
+  eventLoopWatchVariable = 0;
+  // All subsequent activity takes place within the event loop:
+  env->taskScheduler().doEventLoop(&eventLoopWatchVariable);
+  // This function call does not return, unless, at some point in time,
+  // "eventLoopWatchVariable" gets set to something non-zero.
+
+  // decoderThread->join();
+
+  return 0;
+}
+
 void init() {
   /* init glog */
   {
@@ -716,6 +822,20 @@ void init() {
   env = OurUsageEnvironment::createNew(*scheduler);
 }
 
+void stopPlay() {
+  // shutdown streams
+  abrDuration = -1;
+  ta->setOnNextFrameCB(NULL);
+  for (unsigned i = 0; i < videoDesc->numRows; ++i) {
+    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
+      auto ts = tileStates[i][j];
+      if (ts->rtspClient != NULL) funcShutdown(ts);
+    }
+  }
+  picQue.push(NULL);
+  funcShutdown(fallbackLayer);
+}
+
 int main(int argc, char** argv) {
   progName = argv[0];
 
@@ -731,132 +851,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // get a VideoDesc from json
-  videoDesc = getVideoDesc(argv[1]);
-  if (videoDesc == NULL) {
-    return -1;
-  }
+  url = argv[1];
 
-  // parse VideoDesc
-
-  auto numRows = videoDesc->numRows;
-  auto numCols = videoDesc->numCols;
-
-  // grid
-  unsigned x, y, w, h;
-  x = y = w = h = 0;
-  for (unsigned i = 0; i < numRows; ++i) {
-    x = 0;
-    h = rowHeights[i];
-    for (unsigned j = 0; j < numCols; ++j) {
-      w = colWidths[j];
-      auto ts = new TileState();
-      ts->region = Rect(x, y, w, h);
-      tileStates[i][j] = ts;
-      x += w;
-    }
-    y += h;
-  }
-
-  // DEBUG:
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
-      LOG(INFO) << *tileStates[i][j];
-    }
-  }
-
-  // find available tracks for each tile
-  for (unsigned i = 0; i < numRows; ++i) {
-    for (unsigned j = 0; j < numCols; ++j) {
-      // if (i > 1 || j > 1) continue;
-      auto ts = tileStates[i][j];
-      for (auto trackDesc : videoDesc->tracks) {
-        if (!trackDesc->region.equals(ts->region)) continue;
-        ts->videoTrackDesc = trackDesc;
-        break;
-      }
-    }
-  }
-
-  // init TileAgg
-  ta = TileAgg::createNew(*env);
-  ta->setOnNextFrameCB(onNextFrame);
-
-  // init decoder
-  // send VPS/SPS/PPS
-  {
-    u_int8_t buf[1024];
-    u_int32_t frameSize = 0;
-    Frame* frame;
-
-    char const* base64List[3] = {videoDesc->spropVPS, videoDesc->spropSPS,
-                                 videoDesc->spropPPS};
-    for (int i = 0; i < 3; i++) {
-      auto base64 = base64List[i];
-      unsigned num;
-      auto records = parseSPropParameterSets(base64, num);
-      for (unsigned j = 0; j < num; j++) {
-        auto record = records[j];
-        auto data = record.sPropBytes;
-        auto size = record.sPropLength;
-        memmove(buf + frameSize, START_CODE, 4);
-        memmove(buf + frameSize + 4, data, size);
-        frameSize += size + 4;
-      }
-    }
-    frame = new Frame(buf, frameSize);
-    frameQue.push(frame);
-  }
-  void startRendor();
-  startRendor();
-
-  thread decoderThread(decoderThreadFunc);
-
-  // setting up playing
-  for (auto trackDesc : videoDesc->tracks) {
-    if (trackDesc->region.w == 1280) {
-      auto ts = new TileState();
-      ts->region = trackDesc->region;
-      ts->videoTrackDesc = trackDesc;
-      env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
-      break;
-    }
-  }
-
-  // for (unsigned i = 0; i < numRows; ++i) {
-  //   for (unsigned j = 0; j < numCols; ++j) {
-  //     auto ts = tileStates[i][j];
-  //     if (ts->videoTrackDesc == NULL) continue;
-
-  //     env->taskScheduler().scheduleDelayedTask(0, (TaskFunc*)funcSetup, ts);
-  //     // openURL(url);
-  //   }
-  // }
-
-  // // mocking setup/shutdown tiles
-  // for (unsigned k = 1; k < 10; k++) {
-  //   for (unsigned i = 0; i < numRows; ++i) {
-  //     for (unsigned j = 0; j < numCols; ++j) {
-  //       if (i == 0) continue;
-  //       auto ts = tileStates[j][i];
-  //       if (ts->videoTrackDesc == NULL) continue;
-  //       env->taskScheduler().scheduleDelayedTask((k * 12) * 1e6,
-  //                                                (TaskFunc*)funcShutdown,
-  //                                                ts);
-  //       env->taskScheduler().scheduleDelayedTask((6 + k * 12) * 1e6,
-  //                                                (TaskFunc*)funcSetup, ts);
-  //     }
-  //   }
-  // }
-
-  // FoV adaptive bitrate
-  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
-
-  eventLoopWatchVariable = 0;
-  // All subsequent activity takes place within the event loop:
-  env->taskScheduler().doEventLoop(&eventLoopWatchVariable);
-  // This function call does not return, unless, at some point in time,
-  // "eventLoopWatchVariable" gets set to something non-zero.
+  play(url);
 
   // reclaim the (small) memory used by these objects
   env->reclaim();

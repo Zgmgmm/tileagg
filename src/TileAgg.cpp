@@ -26,7 +26,7 @@
 #include "BitVector.hh"
 #include "groupsock/GroupsockHelper.hh"
 #include "strDup.hh"
- 
+
 // FFMPEG
 extern "C" {
 #include "libavcodec/avcodec.h"
@@ -74,7 +74,6 @@ Boolean timeGT(double a, double b, double tollerance = 0.01) {
   if (timeEQ(a, b, tollerance)) return False;
   return a > b;
 }
-
 
 Frame::Frame(u_int8_t* data, u_int32_t size, double npt, Boolean rtpMarker,
              u_int32_t rtpSeqNum)
@@ -281,10 +280,9 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
   }
 
   // DEBUG: QoE
-  static long bytesReceieved = 0;
-  bytesReceieved += frameSize;
+  ta->fBytesReceived += frameSize;
   LOG(INFO) << "npt=" << ta->fLastPlayTime << " receieved bytes "
-            << bytesReceieved << endl;
+            << ta->fBytesReceived << endl;
   // Assume that there's only one SSRC source (usually the case)
   // RTPReceptionStatsDB::Iterator statsIter(
   //     ts->ourSubsession->rtpSource()->receptionStatsDB());
@@ -334,7 +332,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
 
     // no frame available
     if (frame == NULL) break;
-    frame=NULL;
+    frame = NULL;
   };
 
   // for next time
@@ -353,7 +351,7 @@ Frame* TileAgg::aggregate() {
   u_int8_t naluType;
   u_int8_t* data;
 
-  if(fTiles.empty())return NULL;
+  if (fTiles.empty()) return NULL;
   // get next play time
   for (auto ts : fTiles) {
     while (1) {
@@ -457,6 +455,163 @@ Frame* TileAgg::aggregate() {
     outTiles.push_back(outTilesMap[0]);
     outTilesMap.erase(0);
   } else {
+    // auto convertToFistSliceSegment = [](u_int8_t* data, u_int32_t size,
+    //                                     u_int32_t& outSize) {
+    //   auto setUE = [](BitVector& bv, unsigned num) {
+    //     int length = 1;
+    //     int temp = ++num;
+    //     while (temp != 1) {
+    //       temp >>= 1;
+    //       length += 2;
+    //     }
+    //     bv.putBits(0, length >> 1);
+    //     bv.putBits(num, (length + 1) >> 1);
+    //   };
+    //   auto setSE = [setUE](BitVector& bv, unsigned num) {
+    //     u_int32_t v;
+    //     if (num <= 0)
+    //       v = (-1 * num) << 1;
+    //     else
+    //       v = (num << 1) - 1;
+    //     setUE(bv, v);
+    //   };
+    //   auto getGolomb = [](BitVector& bv, unsigned* length = NULL) {
+    //     unsigned golomb;
+    //     int golombBegin, golombEnd;
+    //     golombBegin = bv.curBitIndex();
+    //     golomb = bv.get_expGolomb();  // PPS id
+    //     golombEnd = bv.curBitIndex();
+    //     if (length != NULL) *length = golombEnd - golombBegin;
+    //     return golomb;
+    //   };
+    //   auto remove_emulation_bytes = [](const u_int8_t* buffer_src,
+    //                                    u_int8_t* buffer_dst,
+    //                                    u_int32_t nal_size) {
+    //     u_int32_t i = 0, emulation_bytes_count = 0;
+    //     u_int8_t num_zero = 0;
+
+    //     while (i < nal_size) {
+    //       /*ISO 14496-10: "Within the NAL unit, any four-byte sequence that
+    //         starts with 0x000003 other than the following sequences shall not
+    //         occur at any byte-aligned position: 0x00000300 0x00000301 0x00000302
+    //         0x00000303"
+    //       */
+    //       if (num_zero == 2 && buffer_src[i] == 0x03 &&
+    //           i + 1 < nal_size /*next byte is readable*/
+    //           && (u_int8_t)buffer_src[i + 1] < 0x04) {
+    //         /*emulation code found*/
+    //         num_zero = 0;
+    //         emulation_bytes_count++;
+    //         i++;
+    //       }
+
+    //       buffer_dst[i - emulation_bytes_count] = buffer_src[i];
+
+    //       if (!buffer_src[i])
+    //         num_zero++;
+    //       else
+    //         num_zero = 0;
+
+    //       i++;
+    //     }
+
+    //     return nal_size - emulation_bytes_count;
+    //   };
+    //   auto add_emulation_bytes = [](const u_int8_t* buffer_src,
+    //                                 u_int8_t* buffer_dst, u_int32_t nal_size) {
+    //     u_int32_t i = 0, emulation_bytes_count = 0;
+    //     u_int8_t num_zero = 0;
+
+    //     while (i < nal_size) {
+    //       /*ISO 14496-10: "Within the NAL unit, any four-byte sequence that
+    //       starts with 0x000003 other than the following sequences shall not
+    //       occur at any byte-aligned position: 0x00000300 0x00000301 0x00000302
+    //       0x00000303"
+    //       */
+    //       if (num_zero == 2 && (u_int8_t)buffer_src[i] < 0x04) {
+    //         /*add emulation code*/
+    //         num_zero = 0;
+    //         buffer_dst[i + emulation_bytes_count] = 0x03;
+    //         emulation_bytes_count++;
+    //         if (!buffer_src[i]) num_zero = 1;
+    //       } else {
+    //         if (!buffer_src[i])
+    //           num_zero++;
+    //         else
+    //           num_zero = 0;
+    //       }
+    //       buffer_dst[i + emulation_bytes_count] = buffer_src[i];
+    //       i++;
+    //     }
+    //     return nal_size + emulation_bytes_count;
+    //   };
+
+    //   u_int8_t* buf = new u_int8_t[size];
+    //   auto input = new u_int8_t[size];  // copy
+    //   auto inputSize = remove_emulation_bytes(data, input, size);
+    //   BitVector res(buf, 0, size * 8);
+    //   BitVector bv(input, 0, inputSize * 8);
+    //   res.put1Bit(bv.get1Bit());      // forbidden bit
+    //   auto naluType = bv.getBits(6);  // NAL Unit type
+    //   res.putBits(naluType, 6);       // forbidden bit
+    //   res.putBits(bv.getBits(9), 9);  // Layer, TID
+    //   auto firstSliceSegmentInPicFlag =
+    //       bv.get1Bit();  // first slice segment in pic flag
+    //   res.put1Bit(1);
+    //   auto rapPicFlag = (16 <= naluType && naluType <= 20);
+    //   if (rapPicFlag) {
+    //     res.put1Bit(bv.get1Bit());  // no_output_of_prior_pics_flag
+    //   }
+    //   unsigned ppsId, length;
+    //   ppsId = getGolomb(bv, &length);
+    //   // bv.skipBits(-length);
+    //   // res.putBits(bv.getBits(1),1);
+    //   res.put1Bit(1);
+    //   // setUE(res, ppsId);
+
+    //   bool dependent_slice_segments_enabled_flag =
+    //       false;  // FIXME: && pps->dependent_slice_segments_enabled_flag
+    //   bool dependent_slice_segment_flag = false;
+    //   unsigned slice_address_length =
+    //       9;  // av_ceil_log2(s->ps.sps->ctb_width * s->ps.sps->ctb_height);
+    //   if (!firstSliceSegmentInPicFlag) {
+    //     if (dependent_slice_segments_enabled_flag)
+    //       dependent_slice_segment_flag =
+    //           bv.get1Bit(); /*dependent_slice_segment_flag*/
+    //   }
+    //   unsigned addr;
+    //   if (!firstSliceSegmentInPicFlag) {  // slice segment address
+    //     addr = bv.getBits(
+    //         slice_address_length);  // FIXME: sps->bitsSliceSegmentAddress)
+    //   }
+    //   outSize=res.curBitIndex();
+    //   // outSize+= bv.numBitsRemaining();
+    //   outSize = ((float)outSize + 0.99999) / 8;
+    //   // shiftBits(buf, res.curBitIndex(), data, bv.curBitIndex(),
+    //   //           bv.numBitsRemaining());
+    //   // unsigned num_extra_slice_header_bits =
+    //   //     0;  // pps->num_extra_slice_header_bits
+    //   // if (!dependent_slice_segment_flag) {
+    //   //   bv.skipBits(num_extra_slice_header_bits);
+    //   // }
+
+    //   // unsigned slice_type = getGolomb(bv, &length);
+    //   // res.putBits(slice_type, length);
+
+    //   // if (naluType != 19 && naluType != 20) {
+    //   //   unsigned log2_max_poc_lsb = 4;  // FIXME: sps->log2_max_poc_lsb
+    //   //   unsigned poc_lsb = bv.getBits(log2_max_poc_lsb);
+    //   //   res.putBits(poc_lsb, 4);
+    //   //   res.put1Bit(bv.get1Bit());  // short_term_ref_pic_set_sps_flag
+    //   // }
+    //   delete[] input;
+
+    //   return buf;
+    // };
+    // auto tile = outTilesMap.begin()->second;
+    // unsigned size;
+    // u_int8_t* out = convertToFistSliceSegment(tile->fData, tile->fSize, size);
+    // outTiles.push_back(new Frame(out, size));
   }
 
   for (auto it = outTilesMap.begin(); it != outTilesMap.end(); ++it) {

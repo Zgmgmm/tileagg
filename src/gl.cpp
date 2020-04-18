@@ -436,6 +436,8 @@ int rendorThreadFunc() {
     // bind textures on corresponding texture units
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture1);
+    calculateFoV();
+
     if (!picQue.empty()) {  // update texture
       auto frame = picQue.pop();
       if (frame == NULL) {
@@ -446,8 +448,6 @@ int rendorThreadFunc() {
       texH = frame->height;
       focusTexS = focusS * texW;
       focusTexT = focusT * texH;
-
-      calculateFoV();
 
       displayPredict = displayFoV = viewMode != 2 || frozeFoV;
       // draw vertices in FoV
@@ -497,6 +497,13 @@ int rendorThreadFunc() {
 
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, texW, texH, 0, GL_RGB,
                    GL_UNSIGNED_BYTE, frame->data[0]);
+
+
+      char log[128];
+      sprintf(log, "(%.2f, %3.2f, %3.2f)", camera.Yaw, camera.Pitch,
+              camera.Zoom);
+      LOG(ERROR) << frame->pts << " " << log << endl;
+
       delete[] frame->data[0];
       av_frame_free(&frame);
     } else {

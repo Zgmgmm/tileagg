@@ -9,6 +9,7 @@
 #include "OurUsageEnvironment.hh"
 #include "TileAgg.hh"
 #include "ToString.hh"
+#include "camera.h"
 #include "config.hh"
 #include "glm/glm.hpp"
 #include "glog/logging.h"
@@ -53,6 +54,8 @@ unsigned rtspClientCount;
 TileAgg* ta;
 
 thread* decoderThread;
+
+extern Camera camera;
 
 extern void startRendor();
 extern void stopRendor();
@@ -152,7 +155,7 @@ void continueAfterDESCRIBE(RTSPClient* rtspClient, int resultCode,
     StreamClientState& scs = ((ourRTSPClient*)rtspClient)->scs;  // alias
 
     if (resultCode != 0) {
-      env << *rtspClient << "Failed to get a SDP description: " << resultString
+      LOG(ERROR) << "Failed to get a SDP description: " << resultString
           << "\n";
       delete[] resultString;
       break;
@@ -576,12 +579,12 @@ void abr(void* clientData) {
           }
         }
       } else if (ts->visible) {
-        if (ts->rtspClient == NULL) {
+        if (ts->rtspClient == NULL && ts->videoTrackDesc != NULL) {
           LOG(WARNING) << "tile visible but not active " << *ts << endl;
           funcSetup(ts);
         }
       } else if (ts->predictedVisible) {
-        if (ts->rtspClient == NULL) funcSetup(ts);
+        if (ts->rtspClient == NULL && ts->videoTrackDesc != NULL) funcSetup(ts);
       }
     }
   }
@@ -594,13 +597,12 @@ BlockingQueue<Frame*> frameQue;
 BlockingQueue<AVFrame*> picQue;
 
 void onNextFrame(Frame* frame) {
-  LOG(ERROR) << "onNextFrame " << 1 + frameQue.size() << " " << frame->fNpt
-             << endl;
+  // LOG(ERROR) << "onNextFrame " << 1 + frameQue.size() << " " << frame->fNpt
+  //            << endl;
 
   frameQue.push(frame);
 
   if (frame->fNpt >= videoDesc->duration) {
-    // FIXME: shutdown rtp streams
     stopPlay();
   }
 }
@@ -664,14 +666,15 @@ void decoderThreadFunc() {
     frameQue.push(frame);
   }
 
+  unsigned numFrames = 0;
   while (1) {
     auto frame = frameQue.pop();
 
     if (av_new_packet(avpkt, frame->fSize)) LOG(ERROR) << "error";
 
     memmove(avpkt->data, frame->fData, frame->fSize);
+    avpkt->dts = frame->fNpt * 1000;
     delete frame;
-
     ret = avcodec_send_packet(avctx, avpkt);
     while (ret >= 0) {
       ret = avcodec_receive_frame(avctx, avframe);
@@ -701,6 +704,7 @@ void decoderThreadFunc() {
 
       // void updateTexture(void* data, int width, int height);
       // updateTexture(dstFrame->data[0], dstW, dstH);
+      dstFrame->pts = numFrames++;
       picQue.push(dstFrame);
 
       av_frame_unref(avframe);
@@ -714,6 +718,15 @@ void decoderThreadFunc() {
   av_frame_free(&avframe);
   av_packet_free(&avpkt);
   sws_freeContext(sws);
+}
+
+void recordCamera(void* clientData) {
+  char log[128];
+  sprintf(log, "(%.2f, %3.2f, %3.2f)", camera.Yaw, camera.Pitch, camera.Zoom);
+  LOG(ERROR) << log << std::endl;
+
+  env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)recordCamera,
+                                           NULL);
 }
 
 int play(char* url) {
@@ -785,15 +798,36 @@ int play(char* url) {
   // FoV adaptive bitrate
   env->taskScheduler().scheduleDelayedTask(abrDuration, (TaskFunc*)abr, NULL);
 
+  // env->taskScheduler().scheduleDelayedTask(abrDuration,
+  // (TaskFunc*)recordCamera,
+  //                                          NULL);
+
   eventLoopWatchVariable = 0;
   // All subsequent activity takes place within the event loop:
   env->taskScheduler().doEventLoop(&eventLoopWatchVariable);
+
   // This function call does not return, unless, at some point in time,
   // "eventLoopWatchVariable" gets set to something non-zero.
 
   // decoderThread->join();
 
   return 0;
+}
+
+void stopPlay() {
+  // shutdown streams
+  LOG(ERROR) << "stop "
+             << "bytes=" << ta->fBytesReceived << endl;
+  abrDuration = -1;
+  ta->setOnNextFrameCB(NULL);
+  for (unsigned i = 0; i < videoDesc->numRows; ++i) {
+    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
+      auto ts = tileStates[i][j];
+      if (ts->rtspClient != NULL) funcShutdown(ts);
+    }
+  }
+  funcShutdown(fallbackLayer);
+  picQue.push(NULL);
 }
 
 void init() {
@@ -820,20 +854,6 @@ void init() {
   /* setting up our usage environment */
   scheduler = BasicTaskScheduler::createNew();
   env = OurUsageEnvironment::createNew(*scheduler);
-}
-
-void stopPlay() {
-  // shutdown streams
-  abrDuration = -1;
-  ta->setOnNextFrameCB(NULL);
-  for (unsigned i = 0; i < videoDesc->numRows; ++i) {
-    for (unsigned j = 0; j < videoDesc->numCols; ++j) {
-      auto ts = tileStates[i][j];
-      if (ts->rtspClient != NULL) funcShutdown(ts);
-    }
-  }
-  picQue.push(NULL);
-  funcShutdown(fallbackLayer);
 }
 
 int main(int argc, char** argv) {

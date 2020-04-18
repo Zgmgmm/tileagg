@@ -90,5 +90,7 @@ class TileAgg : public FramedSource {
   unsigned fSPSSize;
   u_int8_t* fPPS;
   unsigned fPPSSize;
+
+  long fBytesReceived;
 };
 #endif

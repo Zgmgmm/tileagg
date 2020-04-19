@@ -1,0 +1,46 @@
+
+name = vr
+# res=1840x992
+res=1280x720
+
+fps=30
+q=30
+tile=3x3
+
+ifdef BR
+	br=$(BR)
+else
+	br=625000
+endif
+
+
+yuv=$(name)_$(res).yuv
+hvc=$(name)_$(res)_fps$(fps)_frametile_$(br)_$(tile).hvc
+mp4=$(name)_$(res)_fps$(fps)_frametile_$(br)_$(tile).mp4
+ 
+all: $(hvc) 
+
+# $(mp4)
+
+# echo: *.mp4
+# 	echo *.mp4
+
+$(hvc): $(yuv)
+	kvazaar -i $(yuv) -o $(hvc) --tiles $(tile)\
+		--slices tiles --mv-constraint frametile -q $(q) --bitrate $(br) --period 24 --input-fps $(fps)
+
+$(mp4): $(hvc)
+	MP4Box -add $(hvc):split_tiles -fps $(fps) -new $(mp4)
+
+dash:
+	rm -f DASH\*
+	MP4Box\
+		-dash 30000\
+		-rap\
+		-segment-name \$$RepresentationID\$$_\$$Bandwidth\$$_\$$Number\$$\$$Init=init\$$\
+		-url-template\
+		-out DASH/$(name).mpd\
+		-fgraph\
+		in_1840x992_fps25_frametile_1300000.mp4
+clean:
+	rm *.hvc *.mp4 DASH/*

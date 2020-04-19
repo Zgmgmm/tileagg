@@ -102,7 +102,7 @@ int status = 0;
 
 typedef void TaskFunc(void* clientData);
 void startRendor() {
-  cout << "rendor thread started." << endl;
+  LOG(INFO) << "rendor thread started." << endl;
   status = 1;
   rendorThread = new thread(rendorThreadFunc);
 }
@@ -302,7 +302,7 @@ int rendorThreadFunc() {
   window =
       glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "LearnOpenGL", NULL, NULL);
   if (window == NULL) {
-    std::cout << "Failed to create GLFW window" << std::endl;
+    LOG(ERROR) << "Failed to create GLFW window" << std::endl;
     glfwTerminate();
     return -1;
   }
@@ -319,7 +319,7 @@ int rendorThreadFunc() {
   // glad: load all OpenGL function pointers
   // ---------------------------------------
   if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-    std::cout << "Failed to initialize GLAD" << std::endl;
+    LOG(ERROR) << "Failed to initialize GLAD" << std::endl;
     return -1;
   }
 
@@ -414,6 +414,7 @@ int rendorThreadFunc() {
   unsigned indexSize;
   unsigned lineIndexSize;
 
+  LOG(INFO)<<"start rendor loop"<<endl;
   // render loop
   // -----------
   while (!glfwWindowShouldClose(window)) {

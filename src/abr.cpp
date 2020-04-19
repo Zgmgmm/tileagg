@@ -609,6 +609,7 @@ void onNextFrame(Frame* frame) {
 
 void decoderThreadFunc() {
   // FFmpeg
+  // avcodec_register_all(); // deprecated
   AVCodecContext* avctx;
   AVCodec* codec;
   AVPacket* avpkt;
@@ -622,13 +623,15 @@ void decoderThreadFunc() {
 
   // init HEVC decoder
   codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-  if (!codec) exit(AVERROR_DECODER_NOT_FOUND);
-
+  if (!codec){
+    LOG(ERROR)<<"decoder not found"<<endl;
+	  exit(AVERROR_DECODER_NOT_FOUND);
+  }
   avctx = avcodec_alloc_context3(codec);
   if (!avctx) exit(AVERROR(ENOMEM));
 
   if (!codec) {
-    fprintf(stderr, "codec not found!");
+    LOG(ERROR)<< "codec not found!"<<endl;
     exit(AVERROR(EINVAL));
   }
 
@@ -643,6 +646,7 @@ void decoderThreadFunc() {
   // init decoder
   // send VPS/SPS/PPS
   {
+    LOG(INFO)<<"initializing decoder"<<endl;
     u_int8_t buf[1024];
     u_int32_t frameSize = 0;
     Frame* frame;
@@ -777,15 +781,19 @@ int play(char* url) {
   ta = TileAgg::createNew(*env);
   ta->setOnNextFrameCB(onNextFrame);
 
+  LOG(INFO)<<"start decoder"<<endl;
   // start decoder and rendor
   decoderThread = new thread(decoderThreadFunc);
 
+  LOG(INFO)<<"start rendor"<<endl;
   startRendor();
 
+  LOG(INFO)<<"setup fallback layer"<<endl;
   // setup fallback layer
   for (auto trackDesc : videoDesc->tracks) {
     auto& region = trackDesc->region;
     if (region.w == videoDesc->width && region.h == videoDesc->height) {
+      LOG(INFO)<<"fallback layer track found"<<endl;
       auto ts = new TileState();
       ts->region = trackDesc->region;
       ts->videoTrackDesc = trackDesc;
@@ -802,6 +810,8 @@ int play(char* url) {
   // (TaskFunc*)recordCamera,
   //                                          NULL);
 
+  LOG(INFO)<<"doEventLoop"<<endl;
+	  
   eventLoopWatchVariable = 0;
   // All subsequent activity takes place within the event loop:
   env->taskScheduler().doEventLoop(&eventLoopWatchVariable);
@@ -838,7 +848,7 @@ void init() {
     // FLAGS_logtostderr = 1; // only stderr
     FLAGS_log_dir = "./log";    // to file
     FLAGS_alsologtostderr = 0;  // file and stderr
-    FLAGS_stderrthreshold = 1;  // INFO
+    FLAGS_stderrthreshold = 0;  // INFO
     FLAGS_minloglevel = 0;      // INFO/WARNNING/ERROR/FATAL
   }
 

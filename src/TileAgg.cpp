@@ -155,13 +155,12 @@ Frame* TileBuffer::dequeueFrame() {
   fFrames.pop_front();
 
   // DEBUG:
-  auto naluType = (frame->fData[0] & 0x7E) >> 1;
-  LOG(INFO) << "[TileState]"
-            << " " << ourSubsession->parentSession().sessionDescription()
-            << " dequeue"
-            << " naluType=" << naluType
-            << " rtpSeqNumber=" << frame->fRtpSeqNumber
-            << " size=" << frame->fSize << "\n";
+  // auto naluType = (frame->fData[0] & 0x7E) >> 1;
+  //LOG(INFO) << " " << ourSubsession->parentSession().sessionDescription()
+  //          << " dequeue"
+  //          << " naluType=" << naluType
+  //          << " rtpSeqNumber=" << frame->fRtpSeqNumber
+  //          << " size=" << frame->fSize << "\n";
 
   // DEBUG: output tile dequeued frames
   {
@@ -322,7 +321,7 @@ void TileAgg ::afterTileGettingFrame(void* clientData, unsigned frameSize,
           naluType, frameSize, curPacketRTPSeqNum - rtpInfoSeqNum,
           curPacketMarkerBit, curPacketRTPSeqNum, presentationTime.tv_sec,
           presentationTime.tv_usec);
-  LOG(INFO) << log;
+  //LOG(INFO) << log;
 
   ts->queueFrame(buffer, frameSize, npt, curPacketRTPSeqNum,
                  curPacketMarkerBit);
@@ -357,9 +356,9 @@ Frame* TileAgg::aggregate() {
     while (1) {
       playTime = ts->curPlayTime();
       if (playTime == PLAY_TIME_UNAVAILABLE) {
-        LOG(INFO) << " awaiting tile "
-                  << ts->ourSubsession->parentSession().sessionDescription()
-                  << "\n";
+        //LOG(INFO) << " awaiting tile "
+        //          << ts->ourSubsession->parentSession().sessionDescription()
+        //         << "\n";
         return NULL;
       }
 
@@ -371,10 +370,10 @@ Frame* TileAgg::aggregate() {
       auto naluType = (ts->fFrames.front()->fData[0] & 0x7E) >> 1;
       delete ts->dequeueFrame();
 
-      LOG(INFO) << " drop frame "
-                << ts->ourSubsession->parentSession().sessionDescription()
-                << " naluType=" << naluType << " play_time=" << (double)playTime
-                << " last_play_time=" << (double)fLastPlayTime << "\n";
+      //LOG(INFO) << " drop frame "
+      //          << ts->ourSubsession->parentSession().sessionDescription()
+      //          << " naluType=" << naluType << " play_time=" << (double)playTime
+      //          << " last_play_time=" << (double)fLastPlayTime << "\n";
     }
     if (earliestPlayTime == PLAY_TIME_UNAVAILABLE)
       earliestPlayTime = playTime;
@@ -392,11 +391,11 @@ Frame* TileAgg::aggregate() {
       frame = ts->dequeueFrame();
       naluType = (frame->fData[0] & 0x7E) >> 1;
       candidates.push_back(frame);
-      envir() << " append Frame from "
+      LOG(INFO) << " append Frame from "
               << ts->ourSubsession->parentSession().sessionDescription()
               << " naluType=" << naluType << " size=" << frame->fSize
               << " play_time=" << (unsigned)playTime << " npt="
-              << (double)playTime / ts->ourSubsession->rtpTimestampFrequency()
+              << playTime
               << "\n";
     }
   }
@@ -445,9 +444,6 @@ Frame* TileAgg::aggregate() {
       outTilesMap[sliceSegmentAddress] = candidate;
     }
 
-    LOG(INFO) << " aggregate"
-              << " bit_index=" << bv.curBitIndex()
-              << " slice_segment_address=" << sliceSegmentAddress << "\n";
   }
 
   std::vector<Frame*> outTiles;
@@ -455,6 +451,7 @@ Frame* TileAgg::aggregate() {
     outTiles.push_back(outTilesMap[0]);
     outTilesMap.erase(0);
   } else {
+    LOG(ERROR)<<"first slice segment not found"<<endl;
     // auto convertToFistSliceSegment = [](u_int8_t* data, u_int32_t size,
     //                                     u_int32_t& outSize) {
     //   auto setUE = [](BitVector& bv, unsigned num) {

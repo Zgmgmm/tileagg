@@ -609,7 +609,7 @@ void onNextFrame(Frame* frame) {
 
 void decoderThreadFunc() {
   // FFmpeg
-  avcodec_register_all();
+  // avcodec_register_all(); // deprecated
   AVCodecContext* avctx;
   AVCodec* codec;
   AVPacket* avpkt;

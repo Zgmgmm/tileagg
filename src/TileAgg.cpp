@@ -155,7 +155,7 @@ Frame* TileBuffer::dequeueFrame() {
   fFrames.pop_front();
 
   // DEBUG:
-  auto naluType = (frame->fData[0] & 0x7E) >> 1;
+  // auto naluType = (frame->fData[0] & 0x7E) >> 1;
   //LOG(INFO) << " " << ourSubsession->parentSession().sessionDescription()
   //          << " dequeue"
   //          << " naluType=" << naluType
